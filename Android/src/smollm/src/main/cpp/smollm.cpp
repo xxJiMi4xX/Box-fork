@@ -24,13 +24,79 @@ void throwJava(JNIEnv *env, const char *message) {
     if (cls) env->ThrowNew(cls, message);
 }
 
+void appendUtf8(std::string &out, uint32_t cp) {
+    if (cp <= 0x7F) out.push_back(static_cast<char>(cp));
+    else if (cp <= 0x7FF) {
+        out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp <= 0xFFFF) {
+        out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+        out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+}
+
+// JNI's GetStringUTFChars returns Modified UTF-8. llama.cpp expects real UTF-8.
 std::string utf(JNIEnv *env, jstring str) {
     if (!str) throw std::invalid_argument("Null string argument");
-    const char *c = env->GetStringUTFChars(str, nullptr);
-    if (!c) throw std::runtime_error("Cannot access Java string");
-    std::string value(c);
-    env->ReleaseStringUTFChars(str, c);
+    const jsize n = env->GetStringLength(str);
+    const jchar *data = env->GetStringChars(str, nullptr);
+    if (!data) throw std::runtime_error("Cannot access Java UTF-16 string");
+    std::string value;
+    value.reserve(static_cast<size_t>(n) * 3);
+    for (jsize i = 0; i < n; ++i) {
+        uint32_t cp = data[i];
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < n &&
+            data[i + 1] >= 0xDC00 && data[i + 1] <= 0xDFFF) {
+            cp = 0x10000 + ((cp - 0xD800) << 10) + (data[++i] - 0xDC00);
+        } else if (cp >= 0xD800 && cp <= 0xDFFF) {
+            cp = 0xFFFD;
+        }
+        appendUtf8(value, cp);
+    }
+    env->ReleaseStringChars(str, data);
+    if (value.find('\0') != std::string::npos)
+        throw std::invalid_argument("NUL characters cannot be used in model prompts/paths");
     return value;
+}
+
+// LLM text is standard UTF-8, including 4-byte Greek-adjacent symbols/emojis.
+// NewStringUTF would require Modified UTF-8; use NewString with UTF-16 instead.
+jstring javaString(JNIEnv *env, const std::string &value) {
+    std::vector<jchar> text;
+    text.reserve(value.size());
+    const auto *ptr = reinterpret_cast<const unsigned char *>(value.data());
+    for (size_t i = 0; i < value.size();) {
+        const uint8_t c = ptr[i++];
+        uint32_t cp = 0;
+        size_t continuation = 0;
+        if (c <= 0x7F) cp = c;
+        else if (c >= 0xC2 && c <= 0xDF) { cp = c & 0x1F; continuation = 1; }
+        else if (c >= 0xE0 && c <= 0xEF) { cp = c & 0x0F; continuation = 2; }
+        else if (c >= 0xF0 && c <= 0xF4) { cp = c & 0x07; continuation = 3; }
+        else throw std::runtime_error("Model returned invalid UTF-8");
+        if (continuation > value.size() - i)
+            throw std::runtime_error("Model returned incomplete UTF-8");
+        while (continuation--) {
+            if ((ptr[i] & 0xC0) != 0x80)
+                throw std::runtime_error("Model returned malformed UTF-8");
+            cp = (cp << 6) | (ptr[i++] & 0x3F);
+        }
+        if (cp >= 0xD800 && cp <= 0xDFFF || cp > 0x10FFFF)
+            throw std::runtime_error("Model returned invalid Unicode");
+        if (cp <= 0xFFFF) text.push_back(static_cast<jchar>(cp));
+        else {
+            cp -= 0x10000;
+            text.push_back(static_cast<jchar>(0xD800 + (cp >> 10)));
+            text.push_back(static_cast<jchar>(0xDC00 + (cp & 0x3FF)));
+        }
+    }
+    return env->NewString(text.data(), static_cast<jsize>(text.size()));
 }
 
 template<typename F> void checked(JNIEnv *env, F &&f) {
@@ -118,7 +184,7 @@ Java_com_jegly_offlineLLM_smollm_SmolLM_completionLoop(
     jstring result = nullptr;
     checked(env, [&] {
         const std::string piece = getInstance(id)->completionLoop();
-        result = env->NewStringUTF(piece.c_str());
+        result = javaString(env, piece);
     });
     return result;
 }
@@ -135,7 +201,7 @@ Java_com_jegly_offlineLLM_smollm_SmolLM_benchModel(
     jstring result = nullptr;
     checked(env, [&] {
         const std::string value = getInstance(id)->benchModel(pp, tg, pl, nr);
-        result = env->NewStringUTF(value.c_str());
+        result = javaString(env, value);
     });
     return result;
 }
@@ -154,13 +220,16 @@ Java_com_jegly_offlineLLM_smollm_SmolLM_nativeTranscribeAudio(
     jstring result = nullptr;
     checked(env, [&] {
         if (!samples) throw std::runtime_error("Audio samples are missing");
+        auto instance = getInstance(id);
+        const int sampleRate = instance->audioInputSampleRate();
         const jsize n = env->GetArrayLength(samples);
-        if (n <= 0 || n > 16000 * 90) throw std::runtime_error("Invalid PCM audio length");
+        if (sampleRate <= 0 || n <= 0 || n > sampleRate * 90)
+            throw std::runtime_error("Invalid PCM audio length or sample rate");
         std::vector<float> pcm(static_cast<size_t>(n));
         env->GetFloatArrayRegion(samples, 0, n, pcm.data());
         if (env->ExceptionCheck()) return;
-        const std::string transcript = getInstance(id)->transcribeAudio(pcm);
-        result = env->NewStringUTF(transcript.c_str());
+        const std::string transcript = instance->transcribeAudio(pcm);
+        result = javaString(env, transcript);
     });
     return result;
 }
