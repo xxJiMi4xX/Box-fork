@@ -143,6 +143,15 @@ fun ChatView(
           llmViewModel.clearAllMessages(selectedModel)
           llmViewModel.beginNewConversation(selectedModel)
         }
+        if (task.id == BuiltInTaskId.LLM_CHAT &&
+            com.google.ai.edge.gallery.engine.GgufAudioFiles.isGguf(selectedModel.getPath(context))) {
+          llmViewModel.restoreGgufHistory(
+            model = selectedModel,
+            prompt = llmViewModel.currentSystemPrompt.value,
+            history = emptyList(),
+            gate = gate,
+          )
+        }
       } else {
         val conversation = llmViewModel.getConversationById(convId)
           ?: throw IllegalStateException("Αυτή η συνομιλία δεν υπάρχει πλέον")
@@ -178,6 +187,7 @@ fun ChatView(
             model = selectedModel,
             prompt = conversation.systemPrompt,
             history = rows.map { it.role to it.content },
+            gate = gate,
           )
         }
       }
