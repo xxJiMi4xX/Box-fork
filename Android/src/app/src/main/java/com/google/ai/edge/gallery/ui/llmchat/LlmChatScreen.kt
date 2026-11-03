@@ -206,6 +206,10 @@ fun ChatViewWrapper(
   autoResumeConversation: Boolean = true,
 ) {
   val context = LocalContext.current
+  androidx.compose.runtime.DisposableEffect(viewModel) {
+    viewModel.configureVoiceOutput(context.applicationContext)
+    onDispose { /* AudioTrack is stopped by the view-model's voice lifecycle. */ }
+  }
   val task = modelManagerViewModel.getTaskById(id = taskId)!!
   val allowThinking = task.allowThinking()
 

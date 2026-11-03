@@ -71,6 +71,10 @@ open class LlmChatViewModelBase() : ChatViewModel() {
   private var activeResponseJob: Job? = null
   private val requestEpoch = AtomicLong(0L)
 
+  fun configureVoiceOutput(context: Context) {
+    voicePlayback.configure(context.applicationContext)
+  }
+
 
   private val _currentSystemPrompt = MutableStateFlow("")
   val currentSystemPrompt: StateFlow<String> = _currentSystemPrompt.asStateFlow()
