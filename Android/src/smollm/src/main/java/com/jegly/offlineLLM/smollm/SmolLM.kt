@@ -115,6 +115,29 @@ class SmolLM {
         return nativeSynthesizeSpeech(nativePtr, text)
     }
 
+    data class MixedVoiceStep(
+        val text: String,
+        val pcm16: ByteArray,
+        val sampleRate: Int,
+        val done: Boolean,
+    )
+
+    fun getMixedResponseAsFlow(query: String): Flow<MixedVoiceStep> = flow {
+        verifyHandle()
+        val handle = nativePtr
+        try {
+            nativeStartMixedCompletion(handle, query)
+            while (true) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                val item = nativeMixedCompletionLoop(handle)
+                if (item.text.isNotEmpty() || item.pcm16.isNotEmpty()) emit(item)
+                if (item.done) break
+            }
+        } finally {
+            if (nativePtr == handle) stopCompletion(handle)
+        }
+    }
+
     fun getResponseGenerationSpeed(): Float {
         verifyHandle()
         return getResponseGenerationSpeed(nativePtr)
@@ -185,6 +208,8 @@ class SmolLM {
     private external fun getContextSizeUsed(modelPtr: Long): Int
     private external fun close(modelPtr: Long)
     private external fun startCompletion(modelPtr: Long, prompt: String)
+    private external fun nativeStartMixedCompletion(modelPtr: Long, prompt: String)
+    private external fun nativeMixedCompletionLoop(modelPtr: Long): MixedVoiceStep
     private external fun completionLoop(modelPtr: Long): String?
     private external fun stopCompletion(modelPtr: Long)
     private external fun nativeRequestStop(modelPtr: Long)
