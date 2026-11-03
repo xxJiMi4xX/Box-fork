@@ -175,6 +175,21 @@ void LLMInference::loadModel(const char *path, float minP, float temperature, fl
     }
 }
 
+std::string LLMInference::getHardwareInfo() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!model_) throw std::runtime_error("Model not loaded");
+    std::ostringstream out;
+    out << "ARM NEON=" << ggml_cpu_has_neon()
+        << " DOTPROD=" << ggml_cpu_has_dotprod()
+        << " I8MM=" << ggml_cpu_has_matmul_int8()
+        << " FP16=" << ggml_cpu_has_fp16_va()
+        << " SVE=" << ggml_cpu_has_sve()
+        << " SVE_BYTES=" << ggml_cpu_get_sve_cnt();
+    ggml_backend_dev_t gpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+    out << " GPU=" << (gpu ? ggml_backend_dev_name(gpu) : "unavailable");
+    return out.str();
+}
+
 std::vector<llama_token> LLMInference::tokenize(const std::string &str) {
     if (str.size() > static_cast<size_t>(INT32_MAX)) throw std::length_error("Prompt too large");
     auto *vocab = llama_model_get_vocab(model_);
