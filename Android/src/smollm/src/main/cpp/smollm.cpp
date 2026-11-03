@@ -184,8 +184,8 @@ Java_com_jegly_offlineLLM_smollm_SmolLM_completionLoop(
     JNIEnv *env, jobject, jlong id) {
     jstring result = nullptr;
     checked(env, [&] {
-        const std::string piece = getInstance(id)->completionLoop();
-        result = javaString(env, piece);
+        const auto piece = getInstance(id)->completionLoop();
+        if (piece.has_value()) result = javaString(env, *piece);
     });
     return result;
 }

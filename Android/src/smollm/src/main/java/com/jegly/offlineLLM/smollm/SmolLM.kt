@@ -130,11 +130,10 @@ class SmolLM {
         val handle = nativePtr
         try {
             startCompletion(handle, query)
-            var piece = completionLoop(handle)
-            while (piece != "[EOG]") {
+            while (true) {
+                val piece = completionLoop(handle) ?: break
                 emit(piece)
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                piece = completionLoop(handle)
             }
         } finally {
             if (nativePtr == handle) stopCompletion(handle)
@@ -147,10 +146,9 @@ class SmolLM {
         try {
             startCompletion(handle, query)
             return buildString {
-                var piece = completionLoop(handle)
-                while (piece != "[EOG]") {
+                while (true) {
+                    val piece = completionLoop(handle) ?: break
                     append(piece)
-                    piece = completionLoop(handle)
                 }
             }
         } finally {
@@ -187,7 +185,7 @@ class SmolLM {
     private external fun getContextSizeUsed(modelPtr: Long): Int
     private external fun close(modelPtr: Long)
     private external fun startCompletion(modelPtr: Long, prompt: String)
-    private external fun completionLoop(modelPtr: Long): String
+    private external fun completionLoop(modelPtr: Long): String?
     private external fun stopCompletion(modelPtr: Long)
     private external fun nativeRequestStop(modelPtr: Long)
     private external fun nativeAudioSampleRate(modelPtr: Long): Int

@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,7 +26,7 @@ public:
     float getResponseGenerationTime();
     int getContextSizeUsed();
     void startCompletion(const char *query);
-    std::string completionLoop();
+    std::optional<std::string> completionLoop();
     void requestStop() noexcept;
     void stopCompletion();
     std::string benchModel(int pp, int tg, int pl, int nr);

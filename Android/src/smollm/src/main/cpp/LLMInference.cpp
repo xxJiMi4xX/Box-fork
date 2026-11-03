@@ -289,22 +289,22 @@ void LLMInference::finishGeneration(bool commitResponse) {
     }
 }
 
-std::string LLMInference::completionLoop() {
+std::optional<std::string> LLMInference::completionLoop() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!generating_) return "[EOG]";
+    if (!generating_) return std::nullopt;
     if (stopRequested_.load()) {
         finishGeneration(false);
-        return "[EOG]";
+        return std::nullopt;
     }
     if (contextUsed_ + 1 >= static_cast<int>(llama_n_ctx(context_))) {
         finishGeneration(true);
-        return "[EOG]";
+        return std::nullopt;
     }
     int64_t start = llama_time_us();
     llama_token token = llama_sampler_sample(sampler_, context_, -1);
     if (llama_vocab_is_eog(llama_model_get_vocab(model_), token)) {
         finishGeneration(true);
-        return "[EOG]";
+        return std::nullopt;
     }
     std::string piece = tokenToPiece(token);
     llama_batch batch = llama_batch_get_one(&token, 1);
