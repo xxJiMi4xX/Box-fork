@@ -8,6 +8,7 @@
 #include <cmath>
 #include <climits>
 #include <cstring>
+#include <string_view>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
@@ -78,6 +79,34 @@ void LLMInference::loadModel(const char *path, float minP, float temperature, fl
         params.n_threads = nThreads;
         mmproj_ = mtmd_init_from_file(mmprojPath, model_, params);
         if (!mmproj_) throw std::runtime_error("Cannot load the matching mmproj GGUF");
+        char architecture[128] = {};
+        if (llama_model_meta_val_str(model_, "general.architecture",
+                                     architecture, sizeof(architecture)) <= 0 ||
+            std::string_view(architecture) != "lfm3")
+            throw std::runtime_error("Voice projector requires an LFM3-Omni model");
+        const mtmd_helper_cap capabilities = mtmd_helper_get_capabilities(model_, mmproj_);
+        const mtmd_gen_audio_info audioInfo = mtmd_gen_audio_get_info(mmproj_);
+        const int audioRate = mtmd_get_audio_sample_rate(mmproj_);
+        if (!capabilities.audio || !mtmd_support_audio(mmproj_) || audioRate < 8000 ||
+            !capabilities.audio_gen || audioInfo.type != MTMD_GEN_AUDIO_TYPE_LFM3A ||
+            audioInfo.sample_rate < 8000)
+            throw std::runtime_error(
+                "This mmproj cannot support both LFM3 Greek ASR and audio synthesis");
+        const char *tts = llama_model_chat_template(model_, "tts");
+        if (!tts || !std::strstr(tts, "bos_token") ||
+            !std::strstr(tts, "Perform TTS in ") ||
+            !std::strstr(tts, "messages[0]['content']") ||
+            !std::strstr(tts, "<|audio_start|>") ||
+            !std::strstr(tts, "<think></think>"))
+            throw std::runtime_error(
+                "The GGUF does not contain the supported LFM3-Omni TTS template");
+        const llama_vocab *vocab = llama_model_get_vocab(model_);
+        const llama_token bos = llama_vocab_bos(vocab);
+        const char *bosText = bos == LLAMA_TOKEN_NULL ? nullptr : llama_vocab_get_text(vocab, bos);
+        if (!bosText || std::strcmp(bosText, "<|startoftext|>") != 0)
+            throw std::runtime_error("Unsupported LFM3 beginning-of-text token");
+        ttsTemplate_ = tts;
+        audioCapabilities_ = 3; // 1: audio input, 2: audio output
     }
 }
 
@@ -282,7 +311,29 @@ std::string LLMInference::benchModel(int, int, int, int) {
 
 int LLMInference::audioInputSampleRate() {
     std::lock_guard<std::mutex> lock(mutex_);
-    return mmproj_ && mtmd_support_audio(mmproj_) ? mtmd_get_audio_sample_rate(mmproj_) : -1;
+    return audioCapabilities_ == 3 ? mtmd_get_audio_sample_rate(mmproj_) : -1;
+}
+
+int LLMInference::audioCapabilities() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return audioCapabilities_;
+}
+
+void LLMInference::resetConversation(const char *systemPrompt) {
+    if (!systemPrompt) throw std::invalid_argument("Null system prompt");
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!context_ || generating_) throw std::runtime_error("Cannot reset while decoding");
+    stopRequested_.store(false);
+    messages_.clear();
+    beforeGeneration_.clear();
+    if (*systemPrompt) messages_.emplace_back("system", systemPrompt);
+    response_.clear();
+    pendingUtf8_.clear();
+    contextUsed_ = 0;
+    responseTokens_ = 0;
+    responseTimeUs_ = 0;
+    llama_memory_clear(llama_get_memory(context_), false);
+    llama_sampler_reset(sampler_);
 }
 
 std::string LLMInference::transcribeAudio(const std::vector<float> &pcm) {
@@ -354,29 +405,24 @@ std::string LLMInference::transcribeAudio(const std::vector<float> &pcm) {
 
 std::vector<uint8_t> LLMInference::synthesizeSpeech(const std::string &text) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!mmproj_ || mtmd_gen_audio_get_info(mmproj_).type == MTMD_GEN_AUDIO_TYPE_NONE)
+    if (!mmproj_ || audioCapabilities_ != 3)
         throw std::runtime_error("Audio synthesis requires a compatible mmproj GGUF");
     if (generating_ || text.empty() || text.size() > 16384)
         throw std::runtime_error("Speech generation unavailable or input too long");
-    // LFM3-Omni's audio generation requires the dedicated audio-start token,
-    // not a normal chat response. Render the regular model chat structure first.
-    const auto caps = mtmd_gen_audio_get_info(mmproj_);
-    if (caps.type != MTMD_GEN_AUDIO_TYPE_LFM3A)
-        throw std::runtime_error("This Greek voice mode requires an LFM3-Audio/Omni projector");
+    // The model's tokenizer.chat_template.tts is verified at loadModel().
+    // Its LFM3-specific Jinja evaluates to precisely this sequence for
+    // language="el", voice="female" and messages[0].content=text.
+    // llama_chat_apply_template() only supports heuristic chat templates and
+    // would *not* render the tts Jinja variables correctly.
+    if (audioCapabilities_ != 3 || ttsTemplate_.empty())
+        throw std::runtime_error("The selected GGUF has no supported Greek TTS template");
     stopRequested_.store(false);
-    const std::string system = "Perform TTS in Greek using a female voice.";
-    const llama_chat_message chat[] = {{"system", system.c_str()}, {"user", text.c_str()}};
-    const int32_t required = llama_chat_apply_template(chatTemplate_.c_str(),
-                                                         chat, 2, true, nullptr, 0);
-    if (required <= 0 || required > 65536)
-        throw std::runtime_error("Cannot render LFM3 speech request");
-    std::vector<char> rendered(static_cast<size_t>(required) + 1, '\0');
-    const int32_t used = llama_chat_apply_template(chatTemplate_.c_str(), chat, 2,
-                                                     true, rendered.data(), static_cast<int32_t>(rendered.size()));
-    if (used <= 0 || used > required)
-        throw std::runtime_error("Cannot render LFM3 speech request");
-    std::string promptStr(rendered.data(), static_cast<size_t>(used));
-    promptStr += "<|audio_start|>";
+    std::string promptStr =
+        "<|startoftext|><|im_start|>system\n"
+        "Perform TTS in Greek using a female voice.<|im_end|>\n"
+        "<|im_start|>user\n";
+    promptStr += text;
+    promptStr += "<|im_end|>\n<|im_start|>assistant\n<think></think><|audio_start|>";
     llama_memory_clear(llama_get_memory(context_), false);
     llama_sampler_reset(sampler_);
     auto *gen = mtmd_helper_gen_audio_init(context_, mmproj_);

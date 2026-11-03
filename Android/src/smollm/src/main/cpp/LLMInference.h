@@ -30,6 +30,8 @@ public:
     void stopCompletion();
     std::string benchModel(int pp, int tg, int pl, int nr);
     int audioInputSampleRate();
+    int audioCapabilities();
+    void resetConversation(const char *systemPrompt);
     std::string transcribeAudio(const std::vector<float> &pcm);
     std::vector<uint8_t> synthesizeSpeech(const std::string &text);
 
@@ -40,6 +42,9 @@ private:
     llama_context *context_ = nullptr;
     llama_sampler *sampler_ = nullptr;
     mtmd_context *mmproj_ = nullptr;
+    std::string ttsTemplate_;
+    int audioCapabilities_ = 0;
+    std::vector<std::pair<std::string,std::string>> beforeGeneration_;
     std::string chatTemplate_;
     std::vector<std::pair<std::string, std::string>> messages_;
     std::string response_;
