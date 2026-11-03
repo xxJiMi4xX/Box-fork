@@ -18,6 +18,7 @@ package com.google.ai.edge.gallery.ui.llmchat
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.os.SystemClock
 import java.io.ByteArrayOutputStream
 import android.util.Log
 import androidx.lifecycle.viewModelScope
@@ -64,6 +65,21 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 private const val TAG = "AGLlmChatViewModel"
+
+/** Logcat-only, monotonic latency timeline. Never logs recognized speech or prompts. */
+private class VoiceLatencyTrace private constructor(private val turnId: Long) {
+  private val startedNs = SystemClock.elapsedRealtimeNanos()
+
+  fun mark(stage: String) {
+    val elapsedMs = (SystemClock.elapsedRealtimeNanos() - startedNs) / 1_000_000L
+    Log.i("BoxVoiceLatency", "turn=$turnId stage=$stage elapsedMs=$elapsedMs")
+  }
+
+  companion object {
+    private val nextId = AtomicLong(0L)
+    fun begin(): VoiceLatencyTrace = VoiceLatencyTrace(nextId.incrementAndGet())
+  }
+}
 
 @OptIn(ExperimentalApi::class)
 open class LlmChatViewModelBase() : ChatViewModel() {
@@ -456,6 +472,9 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     onError: (String) -> Unit,
     allowThinking: Boolean = false,
   ) {
+    val voiceTrace = if (audioMessages.isNotEmpty() && model.instance is LlamaCppEngine) {
+      VoiceLatencyTrace.begin().also { it.mark("turn_requested") }
+    } else null
     val accelerator = model.getStringConfigValue(key = ConfigKeys.ACCELERATOR, defaultValue = "")
     val epoch = requestEpoch.incrementAndGet()
     activeResponseJob?.cancel()
@@ -493,6 +512,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
       }
       delay(100)
       if (requestEpoch.get() != epoch) return@launch
+      voiceTrace?.mark("model_available")
       if (model.instance is LlamaCppEngine) {
         try {
           requireHistoryReady(model)
@@ -530,6 +550,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
         var effectiveInput = input
         var voiceRequested = false
         if (voiceEngine != null) {
+          voiceTrace?.mark("asr_started")
           require(audioClips.size == 1) { "Record one voice clip per turn" }
           val transcript = try {
             voiceEngine.transcribeWav(audioClips.single())
@@ -549,6 +570,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
             return@launch
           }
           if (requestEpoch.get() != epoch) return@launch
+          voiceTrace?.mark("asr_completed")
           if (getLastMessage(model = model)?.type == ChatMessageType.LOADING) {
             removeLastMessage(model = model)
           }
@@ -607,6 +629,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
               systemPromptsByModel[model.name] ?: "",
               paired.takeLast(200),
             )
+            voiceTrace?.mark("history_restored")
           } catch (cancelled: CancellationException) {
             throw cancelled
           } catch (error: Exception) {
@@ -708,12 +731,14 @@ open class LlmChatViewModelBase() : ChatViewModel() {
               }
 
               if (firstRun) {
+                voiceTrace?.mark("text_first_token")
                 firstRun = false
                 setPreparing(false)
                 onFirstToken(model)
               }
 
               if (done) {
+                voiceTrace?.mark("text_completed")
                 val finalLastMessage = getLastMessage(model = model)
                 if (finalLastMessage?.type == ChatMessageType.THINKING) {
                   val thinkingMsg = finalLastMessage as ChatMessageThinking
@@ -752,14 +777,17 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                   voicePlaybackJob?.cancel()
                   voicePlaybackJob = viewModelScope.launch(Dispatchers.IO) {
                     try {
+                      voiceTrace?.mark("tts_started")
                       val accumulated = ByteArrayOutputStream()
                       var clipRate = 0
                       val pieces = VoiceTextSegments.split(spokenAnswer)
                       require(pieces.isNotEmpty()) { "Η φωνητική απάντηση είναι κενή" }
+                      var firstTtsChunk = true
                       for (piece in pieces) {
                         kotlinx.coroutines.currentCoroutineContext().ensureActive()
                         if (requestEpoch.get() != epoch) return@launch
                         val wav = voiceEngine.synthesizeSpeech(piece)
+                        if (firstTtsChunk) voiceTrace?.mark("tts_first_wav_ready")
                         val audio = WavPcm16.read(wav)
                         if (clipRate == 0) clipRate = audio.sampleRate
                         check(clipRate == audio.sampleRate) {
@@ -772,7 +800,13 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                         if (requestEpoch.get() != epoch) return@launch
                         // A new voice turn interrupts either synthesis or the
                         // current clip. Never start a stale audio segment.
-                        voicePlayback.play(audio)
+                        voicePlayback.play(
+                          audio,
+                          onFirstPcmPlayed = if (firstTtsChunk) {
+                            ({ voiceTrace?.mark("first_pcm_played") })
+                          } else null,
+                        )
+                        firstTtsChunk = false
                       }
                       withContext(Dispatchers.Main) {
                         if (requestEpoch.get() != epoch) return@withContext
@@ -786,6 +820,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                         )
                         setPreparing(false)
                         setInProgress(false)
+                        voiceTrace?.mark("voice_completed")
                         onDone()
                       }
                     } catch (cancelled: CancellationException) {
@@ -844,6 +879,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
         val extraContext = if (enableThinking) mapOf("enable_thinking" to "true") else null
 
         if (requestEpoch.get() != epoch) return@launch
+        voiceTrace?.mark("text_inference_dispatched")
         model.runtimeHelper.runInference(
           model = model,
           input = effectiveInput,
