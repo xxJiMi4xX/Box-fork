@@ -1,5 +1,6 @@
 package com.google.ai.edge.gallery.data.local
 
+import androidx.room.withTransaction
 import com.google.ai.edge.gallery.data.local.dao.ConversationDao
 import com.google.ai.edge.gallery.data.local.dao.MessageDao
 import com.google.ai.edge.gallery.data.local.entities.Conversation
@@ -16,6 +17,7 @@ import javax.inject.Singleton
 class ChatRepository @Inject constructor(
     private val conversationDao: ConversationDao,
     private val messageDao: MessageDao,
+    private val database: BoxChatDatabase,
 ) {
     // --- Conversations ---
 
@@ -101,4 +103,51 @@ class ChatRepository @Inject constructor(
 
     suspend fun deleteMessagesForConversation(conversationId: String) =
         messageDao.deleteAllForConversation(conversationId)
+
+    /**
+     * Only a completed GGUF inference turn is durable. Either both user and
+     * assistant messages are committed, or neither is. A pending/cancelled
+     * inference must never leave an unmatched user turn in the encrypted DB.
+     */
+    suspend fun saveCommittedTurn(
+        conversationId: String,
+        modelName: String,
+        userText: String,
+        assistantText: String,
+        latencyMs: Long,
+    ) {
+        require(userText.isNotBlank() && assistantText.isNotBlank())
+        database.withTransaction {
+            val conversation = conversationDao.getConversationById(conversationId)
+                ?: throw IllegalStateException("Conversation was deleted before commit")
+            check(conversation.modelName == modelName) {
+                "Refusing to write a model turn into another model's conversation"
+            }
+            messageDao.insertAll(
+                listOf(
+                    Message(
+                        conversationId = conversationId,
+                        role = "user",
+                        content = userText,
+                    ),
+                    Message(
+                        conversationId = conversationId,
+                        role = "assistant",
+                        content = assistantText,
+                        latencyMs = latencyMs.coerceAtLeast(0),
+                    ),
+                )
+            )
+            val title = if (conversation.messageCount == 0) {
+                userText.take(50).let { if (userText.length > 50) "$it…" else it }
+            } else conversation.title
+            conversationDao.update(
+                conversation.copy(
+                    title = title,
+                    updatedAt = System.currentTimeMillis(),
+                    messageCount = conversation.messageCount + 2,
+                )
+            )
+        }
+    }
 }
