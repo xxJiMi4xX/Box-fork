@@ -111,7 +111,6 @@ object LlamaCppModelHelper : LlmModelHelper {
 
     override fun cleanUp(model: Model, onDone: () -> Unit) {
         val engine = engines.remove(model.name)
-        model.instance = null
         if (engine == null) {
             onDone()
             return

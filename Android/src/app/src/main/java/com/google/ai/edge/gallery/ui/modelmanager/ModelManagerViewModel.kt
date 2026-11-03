@@ -474,13 +474,18 @@ constructor(
     if (model.instance != null) {
       model.cleanUpAfterInit = false
       Log.d(TAG, "Cleaning up model '${model.name}'...")
+      val oldInstance = model.instance
       val onDoneFn: () -> Unit = {
-        model.instance = null
-        model.initializing = false
-        updateModelInitializationStatus(
-          model = model,
-          status = ModelInitializationStatusType.NOT_INITIALIZED,
-        )
+        if (model.instance === oldInstance && !model.initializing) {
+          model.instance = null
+          model.initializing = false
+          updateModelInitializationStatus(
+            model = model,
+            status = ModelInitializationStatusType.NOT_INITIALIZED,
+          )
+        } else {
+          Log.d(TAG, "Skipping stale cleanup completion for ${model.name}")
+        }
         Log.d(TAG, "Clean up model '${model.name}' done")
         onDone()
       }

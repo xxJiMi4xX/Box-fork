@@ -17,6 +17,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.time.measureTime
 
 /**
@@ -25,6 +26,12 @@ import kotlin.time.measureTime
  * LiteRT-LM uses its own independent engine and is unaffected.
  */
 class LlamaCppEngine {
+    companion object {
+        // Releasing a large GGUF must complete before loading the next one,
+        // even when old/new engines are different instances.
+        private val latestTeardown = AtomicReference<Job?>(null)
+    }
+
     @Volatile private var instance = SmolLM()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val nativeMutex = Mutex()
@@ -69,8 +76,10 @@ class LlamaCppEngine {
         loadJob?.cancel()
         val epoch = lifecycleEpoch.incrementAndGet()
         isModelLoaded.set(false)
+        val pendingTeardown = latestTeardown.get()
         loadJob = scope.launch {
             try {
+                pendingTeardown?.join()
                 nativeMutex.withLock {
                     val previous = instance
                     previous.close()
@@ -117,7 +126,9 @@ class LlamaCppEngine {
         // Close the captured instance only after any active JNI call releases
         // the native mutex. A subsequent model load cannot be closed by this job.
         val previous = instance
-        scope.launch(Dispatchers.IO) {
+        val preceding = latestTeardown.get()
+        val teardown = scope.launch(Dispatchers.IO) {
+            if (preceding != null) preceding.join()
             try {
                 nativeMutex.withLock {
                     previous.close()
@@ -127,6 +138,7 @@ class LlamaCppEngine {
                 withContext(NonCancellable + Dispatchers.Main) { onDone() }
             }
         }
+        latestTeardown.set(teardown)
     }
 
     fun resetConversation(
