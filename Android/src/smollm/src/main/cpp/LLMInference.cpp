@@ -499,25 +499,24 @@ std::vector<uint8_t> LLMInference::synthesizeSpeech(const std::string &text) {
         if (left < 0) throw std::runtime_error("Speech prompt encoding failed");
         if (left == 0) break;
     }
-    // Match upstream llama.cpp TTS's discrete sampling protocol. LFM3's
-    // audio mode consumes the hidden-state embedding and ignores this token.
-    // llama_sampler_sample() already accepts the sampled token in pinned
-    // llama.cpp v0.8.0. Never call llama_sampler_accept() again here.
-    llama_token semantic = llama_sampler_sample(sampler_, context_, -1);
+    // The LFM3-Audio pipeline consumes the text model's hidden state,
+    // not a discrete sampled token, while the prompt selects MODE_AUDIO.
+    // Passing LLAMA_TOKEN_NULL avoids irrelevant text decoding/sampling.
+    if (mtmd_helper_gen_audio_next_is_text(gen))
+        throw std::runtime_error("LFM3 TTS unexpectedly entered text mode");
     const float *hidden = llama_get_embeddings_ith(context_, -1);
     if (!hidden) throw std::runtime_error("Speech decoder returned no hidden state");
     bool done = false;
     for (int frames = 0; frames < 768 && !done; ++frames) {
         if (stopRequested_.load()) throw std::runtime_error("Speech generation cancelled");
         const float *nextHidden = nullptr;
-        if (mtmd_helper_gen_audio_step_gen(gen, semantic, hidden, &nextHidden, &done) != 0)
+        if (mtmd_helper_gen_audio_step_gen(gen, LLAMA_TOKEN_NULL, hidden, &nextHidden, &done) != 0)
             throw std::runtime_error("Audio codec generation failed");
         if (!nextHidden) {
             if (!done) throw std::runtime_error("Speech decoder stopped without EOS");
             break;
         }
         hidden = nextHidden;
-        semantic = llama_sampler_sample(sampler_, context_, -1);
     }
     if (stopRequested_.load()) throw std::runtime_error("Speech generation cancelled");
     if (!done) throw std::runtime_error("Speech decoder reached frame cap without audio EOS");
