@@ -603,7 +603,8 @@ fun ChatPanel(
         onPickedAudioClipsChanged = { pickedAudioClipsCount = it.size },
         showPromptTemplatesInMenu = false,
         showSkillsPicker = task.id === BuiltInTaskId.LLM_AGENT_CHAT,
-        showImagePicker = selectedModel.llmSupportImage && showImagePicker,
+        showImagePicker = selectedModel.llmSupportImage && showImagePicker &&
+          selectedModel.instance !is LlamaCppEngine,
         showAudioPicker = (selectedModel.llmSupportAudio && showAudioPicker) || supportsGgufVoice,
         showDocumentPicker = task.id == BuiltInTaskId.LLM_CHAT,
         showStopButtonWhenInProgress = showStopButtonInInputWhenInProgress,
