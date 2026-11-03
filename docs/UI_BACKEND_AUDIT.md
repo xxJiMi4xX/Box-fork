@@ -75,3 +75,11 @@
 ## Διόρθωση provenance: προηγούμενο Termux Greek voice test
 
 Η δήλωση «δεν υπάρχει φωνητική συνομιλία» αφορά το **τρέχον UI του Box Omni** και παραμένει αληθής. Ο χρήστης έχει ήδη επιβεβαιώσει στην ίδια συσκευή **Termux llama-server + Q8_0 + matching mmproj** με λειτουργική ελληνική αναγνώριση ομιλίας και ελληνικό `/tts`. Άρα το πρόβλημα είναι η **έλλειψη JNI/UI διασύνδεσης και αξιοπιστίας voice loop**, όχι η παντελής απουσία βασικής ελληνικής speech ικανότητας του LFM3. Το realtime HTML demo είχε διακοπές. Βλ. `docs/DEVICE_TESTS.md`.
+
+## M1 code implementation diff (not yet runtime verified)
+
+- Import .gguf → RuntimeType.LLAMA_CPP, to prevent falsely identifying GGUF as LiteRT-LM.
+- Existing and newly imported .gguf → temporarily CPU-only and text-only capability advertisements until the media and GPU paths are actually implemented.
+- Import Model UI offers optional matching mmproj picker; imported file sidecar is staged under __imports and projectorFileName passed from ModelManagerViewModel to LlamaCppModelHelper → LlamaCppEngine → SmolLM.loadProjector.
+- MAX_TOKENS reaches a new native maxOutputTokens guard. Reset uses an in-place JNI session reset rather than reloading weights.
+- All above are **code-only/unbuilt** and require CI then actual device verification in the integrated release, not a claim that features now work in the installed APK.

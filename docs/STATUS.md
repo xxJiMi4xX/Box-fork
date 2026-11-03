@@ -38,3 +38,9 @@
 Η προηγούμενη διατύπωση «δεν έχει δοκιμαστεί ελληνική ομιλία» ισχύει **μόνο για το Box APK**. Σε προηγούμενη πραγματική δοκιμή της ίδιας συσκευής με Termux και `llama-server`, το LFM3-Omni-2B Q8_0 + matching `mmproj` αναγνώρισε ελληνική ερώτηση («5+7» → γραπτό «12») και παρήγαγε **κατανοητή ελληνική γυναικεία ομιλία** με `/tts` (WAV 24 kHz). Το realtime HTML demo έκανε διακοπές και προβλήματα ελληνικής φωνής. Άρα βασική ελληνική speech input/output **device-observed στο Termux**, αλλά **όχι υλοποιημένη στο Box GGUF JNI**. Λεπτομέρειες: `docs/DEVICE_TESTS.md`.
 
 Απαιτούμενο: νέο Box Voice Conversation να αξιοποιεί πρώτα εγγενή audio διαδρομή ανά μοντέλο και γλώσσα· για άλλα μοντέλα, μόνο ρητά επιβεβαιωμένο Greek support, χωρίς ψευδές capability flag.
+
+## Implementation M1 status (2026-11-03, source-only)
+
+**Committed, UNVERIFIED:** LLAMA_CPP type, honest CPU/text-only GGUF capability display, mmproj import/persistence/wiring, native output-token cap, in-place session reset. Commits 2c17eab, f0d6245, a91c4a1, 1cd165f, 5304790. Αυτά είναι αδοκίμαστα source patches. Τα προηγούμενα «λείπουν» αφορούσαν το τελευταίο εγκατεστημένο APK (commit a520dcbf), όχι τον πλέον ενημερωμένο GitHub κώδικα.
+
+**Remaining:** rebuild/integration validation later as ONE candidate; actual mmproj capability probe on device, real image/audio, native speech output, Greek Voice Conversation, real Vulkan offload, MediaTek NPU verification/unsupported, full UI/settings/security audit, LiteRT regression.

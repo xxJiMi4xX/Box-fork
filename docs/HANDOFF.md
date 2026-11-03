@@ -49,3 +49,7 @@ AGENTS.md → docs/HANDOFF.md → docs/STATUS.md → docs/PLAN_NEXT_APK.md → d
 ## Ενεργή ανάπτυξη — πρώτο source patch (2026-11-03)
 
 Ξεκίνησε η υλοποίηση του ενιαίου σχεδίου. Πρώτο patch: διακριτό `RuntimeType.LLAMA_CPP` στα εισαγόμενα GGUF, ασφαλής κανονικοποίηση παλιών import flags σε CPU-only/text-only, και εξαίρεση GGUF από Agent Chat που χρησιμοποιεί LiteRT απευθείας. Δεν έγινε νέο APK. Επόμενο: πλήρης εισαγωγή/μόνιμη σύνδεση `mmproj`, και μετά text correctness/voice/hardware. Ελέγξτε HEAD και CI πριν θεωρήσετε το patch επικυρωμένο.
+
+## Milestone M1 — actual source implementation (2026-11-03)
+
+Η έναρξη εγκρίθηκε («Ξεκίνα»). Τα commits 2c17eab, f0d6245, a91c4a1, 1cd165f, 5304790 έχουν περαστεί στη branch feature/gguf-v080-native. Δίνουν: αληθινό GGUF runtime type και CPU-only UI (προς το παρόν), disabled unsupported capabilities, persistent projector filename/proto fields, UI mmproj picker και staged import δύο αρχείων, wiring υπάρχοντος JNI projector loader, πραγματικό native max output tokens, in-place native reset. **ΔΕΝ ΕΧΟΥΝ ΜΕΤΑΓΛΩΤΤΙΣΤΕΙ Ή ΔΟΚΙΜΑΣΤΕΙ ΣΕ APK** και δεν υπάρχει ακόμη πολυτροπική εικόνα/φωνή. Μην πεις ότι η φωνητική συνομιλία υλοποιήθηκε. Τρέχον πλήρες R1 scope/ώρες: docs/PLAN_NEXT_APK.md. Επόμενο: static/source review, prompt/history και Greek audio bridge, χωρίς interim APK.

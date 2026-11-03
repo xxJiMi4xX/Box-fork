@@ -95,3 +95,39 @@ Branch: feature/gguf-v080-native. Baseline: CI #41660795505, runtime text GGUF �
 - Το realtime HTML error επηρεάζει τις απαιτήσεις για session state machine, VAD, audio focus, buffering, echo control και stopping· δεν θεωρείται λυμένο επειδή έχει λειτουργήσει μεμονωμένο `/tts`.
 
 **Προϋπολογισμός (ανθρώπινη προσπάθεια, μέσα στο ήδη προβλεπόμενο σύνολο 128–216 ωρών):** mapping reference Termux/server → JNI **4–6 ώρες**, ελληνικό ASR/TTS regression στο Box **4 ώρες**, έλεγχος συνεχούς εναλλαγής turns και interruptions **4–6 ώρες**. Οι ώρες αυτές είναι τμήματα των εγγεγραμμένων native audio + Voice Conversation + QA workstreams, **όχι προσθήκη στο συνολικό άθροισμα**.
+
+## R1 release scope lock / code implementation started — 2026-11-03
+
+Ο χρήστης ενέκρινε την έναρξη του σχεδίου με «Ξεκίνα». Η πλήρης αποδοχή αφορά **ένα ενοποιημένο υποψήφιο APK**, όχι διαδοχικούς installers. Οι εργασίες source μπορούν να γίνονται σε commits με `[skip ci]`, ώστε να μην ενεργοποιείται παραγωγή debug APK στην τρέχουσα φάση.
+
+### Αναθεωρημένη συνολική περίμετρος (περιλαμβάνει βίντεο)
+
+| Υποσύστημα | Προϋπολογισμός ανθρωποωρών |
+| --- | ---: |
+| Baseline, audit, σύγκριση Termux/server | 6–10 |
+| Runtime/capability manager, UI routing | 12–20 |
+| Model import, matching mmproj, persistence | 8–14 |
+| GGUF correctness, history, lifecycle | 12–20 |
+| Vulkan GPU + πραγματικό offload | 12–24 |
+| MediaTek NPU feasibility/trace | 8–16 |
+| Εικόνες και υποστηριζόμενα video frames | 16–28 |
+| Είσοδος ήχου / ASR | 10–18 |
+| Native speech generation, codec, playback | 14–26 |
+| Greek-first Voice Conversation, VAD, interruptions | 24–42 |
+| Settings, security, database migration | 12–20 |
+| Diagnostics, CI, regression, device verification | 18–30 |
+| **Σύνολο** | **152–268** |
+
+Ο προϋπολογισμός είναι εκτίμηση εργασίας, δεν δηλώνει ότι η NPU/real-time full-duplex θα υλοποιηθούν ανεξαρτήτως συμβατότητας. Οι επιμέρους δοκιμές CPU/GPU 3 ώρες, NPU 4 ώρες, Greek ASR 2 ώρες, Greek TTS 2 ώρες, VAD/turns 4–6 ώρες, media 3–5 ώρες, settings 6–10 ώρες περιλαμβάνονται στο σύνολο.
+
+### Implementation milestone M1 — Source changes committed, UNVERIFIED
+
+- `2c17eab`: imported GGUF classified as LLAMA_CPP, suppress false GGUF image/audio/actions/thinking and GPU/NPU availability, prevent direct LiteRT AgentChat routing.
+- `f0d6245`: proto fields projector_file_name/projector_file_size, Model projectorFileName and forwarding to existing JNI mtmd loader.
+- `a91c4a1`: import UI matching mmproj picker, selected URI forwarding and staging both files before replacing originals, with backup-based rollback.
+- `1cd165f`: real native max output token limit and matching Kotlin/JNI parameter.
+- `5304790`: native in-place session reset, preserving loaded GGUF and projector.
+
+**Κατάσταση:** Στον GitHub κώδικα, **χωρίς build/CI, δοκιμή εγκατάστασης ή λειτουργικό έλεγχο**. Τα source commits με [skip ci] δεν είναι λόγος να δηλωθεί λειτουργική δυνατότητα. M1 χρειάζεται κώδικα/στατική επιθεώρηση, αργότερα μία ενιαία υποψήφια έκδοση και device tests, όχι μεμονωμένο APK.
+
+**Συνέχεια M2:** Διορθώσεις model-specific template, native session history/system prompt, πραγματικό capability validation μετά τη φόρτωση mmproj, και σχεδίαση σταθερής audio bridge με αναφορά pinned llama-server. Μ2 δεν σημαίνει άδεια πρόωρου build.

@@ -52,3 +52,14 @@
 - Until native GGUF media inference works, imported image/audio/actions/thinking flags cannot masquerade as supported UI features. GGUF accelerator is limited to CPU in this build regardless of historic import checkboxes.
 - GGUF removed from AgentChat registration since that task calls LiteRT directly. Separate LiteRT model behavior is preserved.
 - Source-level patch only, no new APK or actual device validation. Remaining: mmproj picker and native wiring, text correctness, GPU/NPU, voice and full QA.
+
+## 2026-11-03 — ΕΝΑΡΞΗ ΥΛΟΠΟΙΗΣΗΣ / Code milestone M1 (χωρίς APK)
+
+- **Στόχος:** η βάση Import Model → Model metadata → JNI να αντικατοπτρίζει πραγματικές δυνατότητες και να δέχεται ζεύγος GGUF+mmproj.
+- **Commit 2c17eab:** διακριτός LLAMA_CPP runtime και καταστολή μη υλοποιημένων GGUF capabilities/false accelerator, αποφυγή AgentChat LiteRT mismatch.
+- **Commit f0d6245:** proto + Model metadata matching projector, forwarding στο SmolLM JNI.
+- **Commit a91c4a1:** mmproj picker, εισαγωγή στο app storage ως συσχετισμένο GGUF sidecar, ασφαλής staged αντιγραφή/backup πριν την αντικατάσταση.
+- **Commit 1cd165f:** εφαρμογή MAX_TOKENS στον native GGUF sampling loop και σύνδεση Kotlin/JNI, διόρθωση missing coroutine import.
+- **Commit 5304790:** in-place native reset ιστορικού/KV cache χωρίς επαναφόρτωση μοντέλου/projector.
+- **Verification:** Source review only· **ούτε build ούτε real-device tests**. Αλλαγές σκόπιμα σημειώνονται [skip ci] ώστε να αποφευχθεί ενδιάμεσο APK.
+- **Συνέχεια:** system prompt/history, CPU/GPU verification, multimodal audio/video paths, Greek Voice Conversation, privacy/settings, integrated CI και full acceptance gates.
