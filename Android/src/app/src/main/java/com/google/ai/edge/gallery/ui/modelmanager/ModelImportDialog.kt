@@ -85,8 +85,6 @@ import com.google.ai.edge.gallery.ui.common.humanReadableSize
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.file.Files
-import java.nio.file.StandardCopyOption
-import java.nio.file.AtomicMoveNotSupportedException
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import kotlinx.coroutines.CoroutineScope
@@ -454,11 +452,8 @@ private fun importModel(
         }
         require(valid) { "Το αρχείο δεν είναι έγκυρο GGUF" }
       }
-      try {
-        Files.move(staging.toPath(), outputFile.toPath(), StandardCopyOption.ATOMIC_MOVE)
-      } catch (_: AtomicMoveNotSupportedException) {
-        Files.move(staging.toPath(), outputFile.toPath())
-      }
+      // No REPLACE_EXISTING: a concurrent import cannot silently replace an existing model.
+      Files.move(staging.toPath(), outputFile.toPath())
       temporary = null
       withContext(Dispatchers.Main) {
         onProgress(1f)
