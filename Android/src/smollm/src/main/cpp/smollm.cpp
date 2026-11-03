@@ -299,6 +299,14 @@ Java_com_jegly_offlineLLM_smollm_SmolLM_nativeRequestStop(
     checked(env, [&] { getInstance(id)->requestStop(); });
 }
 
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_jegly_offlineLLM_smollm_SmolLM_nativeHardwareInfo(
+    JNIEnv *env, jobject, jlong id) {
+    jstring result = nullptr;
+    checked(env, [&] { result = javaString(env, getInstance(id)->getHardwareInfo()); });
+    return result;
+}
+
 extern "C" JNIEXPORT jint JNICALL
 Java_com_jegly_offlineLLM_smollm_SmolLM_nativeAudioCapabilities(
     JNIEnv *env, jobject, jlong id) {
