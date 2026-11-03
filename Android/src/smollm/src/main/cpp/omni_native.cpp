@@ -403,6 +403,7 @@ public:
                 const auto loaded = mtmd_helper_bitmap_init_from_buf(
                     projector_.get(), audioWav.data(), audioWav.size(), false, options);
                 mtmd::bitmap_ptr bitmap(loaded.bitmap);
+                mtmd_helper::video_ptr extraVideo(loaded.video_ctx);
                 if (!bitmap || !mtmd_bitmap_is_audio(bitmap.get())) {
                     throw std::runtime_error("Unable to decode the audio clip with mtmd");
                 }

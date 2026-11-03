@@ -283,6 +283,14 @@ class LlamaCppEngine {
         }
     }
 
+    /**
+     * Interrupt a long native TTS operation without waiting for stateLock.
+     * The JNI code checks this atomic abort flag while holding its own mutex.
+     */
+    fun stopSpeech() {
+        instance.interruptGeneration()
+    }
+
     fun stopGeneration() {
         stateLock.withLock {
             instance.interruptGeneration()
