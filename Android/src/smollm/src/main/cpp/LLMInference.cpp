@@ -16,6 +16,7 @@
 LLMInference::~LLMInference() {
     stopRequested_.store(true);
     std::lock_guard<std::mutex> lock(mutex_);
+    if (mixedGen_) mtmd_helper_gen_audio_free(mixedGen_);
     if (mmproj_) mtmd_free(mmproj_);
     if (sampler_) llama_sampler_free(sampler_);
     if (context_) llama_free(context_);
@@ -285,6 +286,11 @@ bool LLMInference::validUtf8(const std::string &bytes) {
 }
 
 void LLMInference::finishGeneration(bool commitResponse) {
+    if (mixedGen_) {
+        mtmd_helper_gen_audio_free(mixedGen_);
+        mixedGen_ = nullptr;
+        mixedHidden_.clear();
+    }
     if (!generating_) return;
     generating_ = false;
     pendingUtf8_.clear();
@@ -296,6 +302,127 @@ void LLMInference::finishGeneration(bool commitResponse) {
     } else {
         if (!response_.empty()) messages_.emplace_back("assistant", response_);
         beforeGeneration_.clear();
+    }
+}
+
+// The same llama_context generates both text and audio. The pinned mtmd
+// LFM3 pipeline supports continuing a conversation with <|mixed_start|>.
+// Never create a second loaded GGUF model or an independent TTS context.
+void LLMInference::startMixedCompletion(const char *query) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!mmproj_ || audioCapabilities_ != 3 || !isLfm3_)
+            throw std::runtime_error("LFM3 mixed text/audio requires a compatible voice projector");
+    }
+    // Reuse the history rollback, context-window checks and prompt rendering.
+    startCompletion(query);
+    std::lock_guard<std::mutex> lock(mutex_);
+    try {
+        if (stopRequested_.load()) throw std::runtime_error("Mixed generation cancelled");
+        mixedGen_ = mtmd_helper_gen_audio_init(context_, mmproj_);
+        if (!mixedGen_) throw std::runtime_error("Cannot initialize LFM3 mixed text/audio pipeline");
+        const std::string marker = "<|mixed_start|>";
+        auto inp = mtmd_helper_gen_audio_inp_default();
+        inp.prompt = marker.c_str();
+        inp.prompt_len = marker.size();
+        inp.n_past = contextUsed_;
+        inp.seq_id = 0;
+        inp.stream = true;
+        inp.out_type = MTMD_HELPER_GEN_AUDIO_OUTTYPE_PCM;
+        inp.out_mode = MTMD_HELPER_GEN_AUDIO_OUT_AUTO;
+        if (mtmd_helper_gen_audio_set_input(mixedGen_, &inp) != 0)
+            throw std::runtime_error("LFM3 mixed output is not supported by this GGUF");
+        int32_t left = 0;
+        while ((left = mtmd_helper_gen_audio_step_prompt(
+                    mixedGen_, static_cast<int32_t>(llama_n_batch(context_)))) > 0) {
+            if (stopRequested_.load()) throw std::runtime_error("Mixed prefill cancelled");
+        }
+        if (left < 0) throw std::runtime_error("Mixed audio prompt decoding failed");
+        const float *hidden = llama_get_embeddings_ith(context_, -1);
+        const int n_embd = llama_model_n_embd(model_);
+        if (!hidden || n_embd <= 0) throw std::runtime_error("No mixed generation hidden state");
+        mixedHidden_.assign(hidden, hidden + n_embd);
+    } catch (...) {
+        finishGeneration(false);
+        llama_memory_clear(llama_get_memory(context_), false);
+        llama_sampler_reset(sampler_);
+        throw;
+    }
+}
+
+LLMInference::MixedStep LLMInference::mixedCompletionLoop() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!generating_ || !mixedGen_) return MixedStep{{}, {}, 0, true};
+    if (stopRequested_.load()) {
+        finishGeneration(false);
+        throw std::runtime_error("Mixed speech generation cancelled");
+    }
+    if (llama_memory_seq_pos_max(llama_get_memory(context_), 0) + 2 >=
+        static_cast<llama_pos>(llama_n_ctx(context_))) {
+        finishGeneration(false);
+        throw std::runtime_error("Mixed speech context window exhausted");
+    }
+    try {
+        MixedStep result;
+        const bool isText = mtmd_helper_gen_audio_next_is_text(mixedGen_);
+        llama_token sampled = LLAMA_TOKEN_NULL;
+        if (isText) {
+            sampled = llama_sampler_sample(sampler_, context_, -1);
+            llama_sampler_accept(sampler_, sampled);
+        }
+        const float *nextHidden = nullptr;
+        bool done = false;
+        if (mtmd_helper_gen_audio_step_gen(mixedGen_, sampled,
+                mixedHidden_.data(), &nextHidden, &done) != 0)
+            throw std::runtime_error("LFM3 mixed text/audio generation failed");
+        if (nextHidden) {
+            mixedHidden_.assign(nextHidden, nextHidden + mixedHidden_.size());
+        }
+        if (isText && !done && sampled != LLAMA_TOKEN_NULL &&
+            !llama_vocab_is_control(llama_model_get_vocab(model_), sampled)) {
+            pendingUtf8_ += tokenToPiece(sampled);
+            if (validUtf8(pendingUtf8_)) {
+                result.text = std::move(pendingUtf8_);
+                response_ += result.text;
+                pendingUtf8_.clear();
+                responseTokens_++;
+            } else if (pendingUtf8_.size() > 8) {
+                throw std::runtime_error("Malformed mixed text token");
+            }
+        }
+        if (done && mtmd_helper_gen_audio_flush(mixedGen_) != 0)
+            throw std::runtime_error("LFM3 mixed audio flush failed");
+        const char *raw = nullptr;
+        size_t bytes = 0;
+        int32_t rate = 0;
+        if (mtmd_helper_gen_audio_get_output(mixedGen_, &rate, &raw, &bytes, nullptr) != 0)
+            throw std::runtime_error("Cannot read mixed audio PCM");
+        if (bytes > 0) {
+            if (!raw || bytes % sizeof(float) != 0 || bytes > 4 * 1024 * 1024 ||
+                rate < 8000 || rate > 192000)
+                throw std::runtime_error("Invalid mixed audio PCM frame");
+            const size_t n = bytes / sizeof(float);
+            result.pcm16.resize(n * 2);
+            for (size_t i = 0; i < n; ++i) {
+                float sample;
+                std::memcpy(&sample, raw + i * sizeof(float), sizeof(sample));
+                if (!std::isfinite(sample)) sample = 0.0f;
+                const int16_t pcm = static_cast<int16_t>(
+                    std::lrint(std::clamp(sample, -1.0f, 1.0f) * 32767.0f));
+                result.pcm16[i * 2] = static_cast<uint8_t>(pcm & 255);
+                result.pcm16[i * 2 + 1] = static_cast<uint8_t>(
+                    (static_cast<uint16_t>(pcm) >> 8) & 255);
+            }
+            result.sampleRate = rate;
+        }
+        contextUsed_ = static_cast<int>(
+            llama_memory_seq_pos_max(llama_get_memory(context_), 0) + 1);
+        result.done = done;
+        if (done) finishGeneration(true);
+        return result;
+    } catch (...) {
+        finishGeneration(false);
+        throw;
     }
 }
 
