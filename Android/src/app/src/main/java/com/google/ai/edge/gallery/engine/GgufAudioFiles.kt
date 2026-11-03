@@ -72,7 +72,18 @@ object GgufAudioFiles {
                     ?: throw IOException("Cannot open the selected mmproj")
                 source.use { input ->
                     temporary.outputStream().buffered().use { output ->
-                        input.copyTo(output, 256 * 1024)
+                        val buffer = ByteArray(256 * 1024)
+                        val maximumBytes = 4L * 1024 * 1024 * 1024
+                        var totalBytes = 0L
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            totalBytes += count
+                            if (totalBytes > maximumBytes) {
+                                throw IOException("The selected projector exceeds the 4 GiB limit")
+                            }
+                            if (count > 0) output.write(buffer, 0, count)
+                        }
                     }
                 }
                 if (temporary.length() < 32L) throw IOException("The selected mmproj is too small")
