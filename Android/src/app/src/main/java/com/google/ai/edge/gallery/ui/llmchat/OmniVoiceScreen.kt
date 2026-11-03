@@ -50,6 +50,7 @@ import com.google.ai.edge.gallery.data.ModelDownloadStatusType
 import com.google.ai.edge.gallery.proto.ImportedModel
 import com.google.ai.edge.gallery.engine.GgufAudioFiles
 import com.google.ai.edge.gallery.engine.LlamaCppEngine
+import com.google.ai.edge.gallery.runtime.VoiceGgufRuntimeSettings
 import com.google.ai.edge.gallery.ui.common.chat.ChatMessageError
 import com.google.ai.edge.gallery.ui.common.chat.ChatMessageLoading
 import com.google.ai.edge.gallery.ui.common.chat.ChatMessageText
@@ -116,6 +117,16 @@ fun OmniVoiceScreen(
         }
     }
     val selected = models.firstOrNull { it.name == (selectedName ?: firstChoice) }
+    val maxCpuThreads = remember { VoiceGgufRuntimeSettings.maxCpuThreads() }
+    var cpuThreads by remember(selected?.name) {
+        mutableStateOf(
+            selected?.let {
+                VoiceGgufRuntimeSettings.cpuThreads(context, it.getPath(context))
+            } ?: VoiceGgufRuntimeSettings.defaultCpuThreads()
+        )
+    }
+    var unloading by remember(selected?.name) { mutableStateOf(false) }
+    var runtimeError by remember(selected?.name) { mutableStateOf<String?>(null) }
     val status = selected?.let { manager.modelInitializationStatus[it.name] }
     val isInitialized = status?.status == ModelInitializationStatusType.INITIALIZED
     val engine = selected?.instance as? LlamaCppEngine
@@ -142,17 +153,8 @@ fun OmniVoiceScreen(
     }
 
     val download = selected?.let { manager.modelDownloadStatus[it.name]?.status }
-    LaunchedEffect(selected?.name, download) {
-        val model = selected
-        if (task != null && model != null &&
-            download == ModelDownloadStatusType.SUCCEEDED) {
-            modelManagerViewModel.initializeModel(
-                context = context,
-                task = task,
-                model = model,
-            )
-        }
-    }
+    // Deliberately do not auto-load when this destination opens: explicitly
+    // unloading must remain effective, even after leaving/reopening the screen.
 
     // Reuse the encrypted chat repository and the native GGUF history gate.
     // The status key changes after a force-reload of the projector.
@@ -255,6 +257,56 @@ fun OmniVoiceScreen(
                     }
                 }
 
+                Text("Υπολογισμός GGUF", style = MaterialTheme.typography.titleMedium)
+                Text("Backend: CPU. Η GPU/Vulkan δεν είναι ενεργή σε αυτό το APK.")
+                Text("Νήματα CPU: $cpuThreads / $maxCpuThreads")
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(
+                        enabled = cpuThreads > 1 && !unloading,
+                        onClick = {
+                            val value = cpuThreads - 1
+                            runCatching {
+                                VoiceGgufRuntimeSettings.setCpuThreads(
+                                    context, selected.getPath(context), value
+                                )
+                            }.onSuccess {
+                                cpuThreads = value
+                                runtimeError = null
+                            }.onFailure { runtimeError = it.message }
+                        },
+                    ) { Text("−") }
+                    OutlinedButton(
+                        enabled = cpuThreads < maxCpuThreads && !unloading,
+                        onClick = {
+                            val value = cpuThreads + 1
+                            runCatching {
+                                VoiceGgufRuntimeSettings.setCpuThreads(
+                                    context, selected.getPath(context), value
+                                )
+                            }.onSuccess {
+                                cpuThreads = value
+                                runtimeError = null
+                            }.onFailure { runtimeError = it.message }
+                        },
+                    ) { Text("+") }
+                }
+                val activeThreads = engine?.lastLoadParams?.numThreads
+                if (modelLoaded && activeThreads != null) {
+                    Text(
+                        if (activeThreads == cpuThreads) "Ενεργά CPU threads: $activeThreads"
+                        else "Ενεργά CPU threads: $activeThreads. Πάτησε Επαναφόρτωση για να χρησιμοποιηθούν $cpuThreads.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                } else {
+                    Text(
+                        "Η επιλογή εφαρμόζεται στην επόμενη φόρτωση. Τα threads δεν δεσμεύουν συγκεκριμένους πυρήνες.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                if (runtimeError != null) {
+                    Text(runtimeError!!, color = MaterialTheme.colorScheme.error)
+                }
+
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { ggufPicker.launch(arrayOf("*/*")) }) {
                         Text("Εισαγωγή GGUF")
@@ -262,7 +314,7 @@ fun OmniVoiceScreen(
                     OutlinedButton(
                         enabled = task != null &&
                             download == ModelDownloadStatusType.SUCCEEDED &&
-                            status?.status != ModelInitializationStatusType.INITIALIZING,
+                            status?.status != ModelInitializationStatusType.INITIALIZING && !unloading,
                         onClick = {
                             task?.let {
                                 viewModel.stopResponse(selected)
@@ -274,6 +326,25 @@ fun OmniVoiceScreen(
                     ) { Text(if (modelLoaded) "Επαναφόρτωση" else "Φόρτωση") }
                 }
 
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = task != null && !unloading &&
+                        selected.instance is LlamaCppEngine &&
+                        status?.status != ModelInitializationStatusType.INITIALIZING,
+                    onClick = {
+                        task?.let {
+                            unloading = true
+                            viewModel.stopResponse(selected)
+                            modelManagerViewModel.cleanupModel(
+                                context = context,
+                                task = it,
+                                model = selected,
+                                onDone = { unloading = false },
+                            )
+                        }
+                    },
+                ) { Text(if (unloading) "Αποδέσμευση RAM..." else "Unload μοντέλου / Αποδέσμευση RAM") }
+
                 Text("Κατάσταση ήχου", style = MaterialTheme.typography.titleMedium)
                 val diagnostic = when {
                     status?.status == ModelInitializationStatusType.ERROR ->
@@ -282,8 +353,8 @@ fun OmniVoiceScreen(
                         "Το μοντέλο δεν είναι διαθέσιμο στη συσκευή."
                     status?.status == ModelInitializationStatusType.INITIALIZING ->
                         "Φορτώνεται το μοντέλο και ελέγχονται οι δυνατότητες ήχου…"
-                    !modelLoaded ->
-                        "Αναμονή αρχικοποίησης της μηχανής GGUF…"
+                    unloading -> "Αποδεσμεύεται το GGUF από τη RAM…"
+                    !modelLoaded -> "Το μοντέλο δεν είναι φορτωμένο. Επίλεξε Φόρτωση."
                     projector == null ->
                         "Το μοντέλο λειτουργεί για κείμενο, αλλά δεν βρέθηκε mmproj για ASR/TTS."
                     !hasFullAudio ->
