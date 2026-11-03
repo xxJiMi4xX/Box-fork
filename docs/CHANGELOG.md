@@ -38,3 +38,10 @@
 - **Εύρημα:** Voice tab = Whisper STT, hold-to-dictate = push-to-talk text, audio clips = recording/playback, χωρίς dedicated hands-free/full voice LLM conversation. GGUF media inference και speech output δεν είναι συνδεδεμένα.
 - **Απόφαση:** προσθήκη `Voice Conversation` ως ενιαίο μέρος επόμενου integrated APK scope, όχι ανεξάρτητο δοκιμαστικό APK. Πρόσθετος αναλυτικός προϋπολογισμός 24–42 ώρες για UI/session orchestration, VAD/barge-in/audio focus και tests (το native audio engineering ήδη προϋπολογισμένο).
 - **Αποτέλεσμα:** μόνο τεκμηρίωση, χωρίς runtime αλλαγή, CI build ή APK.
+
+## 2026-11-03 — Ανάκτηση προηγούμενης κοινής δοκιμής ελληνικής φωνής στο Termux
+
+- **Αφορμή:** Ο χρήστης υπενθύμισε ότι δοκιμάσαμε μαζί στο Termux το LFM3-Omni-2B Q8_0 με matching mmproj.
+- **Προηγούμενο αποτέλεσμα:** `llama-server` στο Poco X6 Pro 12 GB, localhost:8080, ctx 4096, 4 threads. Ελληνική προφορική ερώτηση («5+7») παρήγαγε σωστό γραπτό «12». Το `/tts` παρήγαγε κατανοητή ελληνική γυναικεία φωνή, σε WAV 24 kHz. Realtime HTML voice υπέφερε από διακοπές/κακή ελληνική συμπεριφορά.
+- **Διόρθωση τεχνικού σχεδίου:** Greek speech input/output είναι ήδη *device-observed στο Termux*, και δεν χρειάζεται να δηλωθεί εκ νέου ανεπιβεβαίωτη ιδιότητα του μοντέλου. Αντίθετα, το Box JNI **δεν** έχει ακόμη ενσωματώσει αυτή την ηχητική διαδρομή και απαιτεί ξεχωριστή απόδειξη.
+- **Αλλαγή scope:** Μεταφέρουμε το ήδη επιτυχημένο native speech path και δημιουργούμε Greek-first model-agnostic Voice Conversation. **Καμία αλλαγή στον app runtime και κανένα νέο APK σε αυτό το βήμα.**

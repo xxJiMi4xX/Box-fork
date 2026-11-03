@@ -81,3 +81,17 @@ Branch: feature/gguf-v080-native. Baseline: CI #41660795505, runtime text GGUF �
 - Ελληνικά: ξεχωριστά tests εισερχόμενης ομιλίας, εξαγόμενου κειμένου, παραγόμενης ελληνικής φωνής, καθυστέρησης και σταθερότητας.
 - Ενδεικτικός επιπλέον προϋπολογισμός **Voice UI/session controller 8–14 ώρες**, **VAD/auto-turn/audio focus/barge-in 10–18 ώρες**, **end-to-end αξιολόγηση/παλινδρόμηση 6–10 ώρες**. **Σύνολο επιπλέον 24–42 ανθρωποώρες**, πέραν των ήδη εκτιμημένων native audio input/output εργασιών. **Αναθεωρημένο συνολικό πλαίσιο 128–216 ανθρωποώρες**, υπό την επιφύλαξη πραγματικής συμβατότητας του audio backend.
 - Απαραίτητο πριν δοθεί APK: αποδεδειγμένη τουλάχιστον turn-based φωνητική συνομιλία· auto-hands-free/barge-in μόνο αν τα επιμέρους device tests περάσουν. Αλλιώς η επιλογή εμφανίζεται ως beta με ακριβείς περιορισμούς ή παραμένει ανενεργή.
+
+## Greek-first model-native voice: απαίτηση με ήδη επιβεβαιωμένη Termux βάση (2026-11-03)
+
+**Δεν πρόκειται για υπόθεση:** ο χρήστης έχει ήδη εκτελέσει στην ίδια συσκευή Termux `llama-server` με το Q8_0 και το matching `mmproj`: ελληνική είσοδος ομιλίας (5+7→12) και κατανοητή ελληνική φωνητική έξοδος μέσω `/tts` (WAV 24 kHz) **πέτυχαν**. Τα realtime HTML sessions είχαν διακοπές και προβλήματα γλώσσας. Βλ. `DEVICE_TESTS.md`.
+
+**Ενιαίο σχέδιο ενσωμάτωσης:**
+- Πρώτη προτεραιότητα είναι η **αναπαραγωγή στο Box native JNI της ήδη επιτυχημένης model-native Termux διαδρομής**. Πριν υλοποιηθεί νέο audio codec, αντιστοίχιση reference `llama-server` API (speech input και `/tts`) με το pinned llama.cpp v0.8.0 / libmtmd / GGUF JNI, εντοπισμός των ακριβών επιπλέον native APIs και κατάσταση lifecycle.
+- Καινούρια οθόνη `Voice Conversation`: ελληνική γλώσσα `el-GR` ως επιλογή, μικρόφωνο, ενεργή κατάσταση listening/processing/speaking, αυτόματη εναλλαγή turn, mute, stop, interruption, ίδιο conversation state και αποθήκευση ιστορικού.
+- **Model-native speech** όπου πραγματικά διαθέσιμη· fallbacks STT→LLM→TTS μόνο όταν το μοντέλο δεν μπορεί να παράγει φωνή, με ρητά εμφανιζόμενα components.
+- Ανεξάρτητη ανίχνευση `Greek text`, `Greek audio input`, `Greek audio output` ανά model+backend+loaded mmproj. Άλλο μοντέλο με πραγματική υποστήριξη ελληνικών πρέπει να λειτουργεί μέσω της ίδιας διεπαφής χωρίς bespoke αλλαγές.
+- Το ήδη δουλεμένο `/tts` και η αναγνώριση ελληνικής ομιλίας είναι **baseline acceptance evidence για το Termux**, όχι για το Box. Για το Box απαιτείται νέα ακριβής δοκιμή με ίδιο audio prompt/συνθήκες πριν περάσει το gate.
+- Το realtime HTML error επηρεάζει τις απαιτήσεις για session state machine, VAD, audio focus, buffering, echo control και stopping· δεν θεωρείται λυμένο επειδή έχει λειτουργήσει μεμονωμένο `/tts`.
+
+**Προϋπολογισμός (ανθρώπινη προσπάθεια, μέσα στο ήδη προβλεπόμενο σύνολο 128–216 ωρών):** mapping reference Termux/server → JNI **4–6 ώρες**, ελληνικό ASR/TTS regression στο Box **4 ώρες**, έλεγχος συνεχούς εναλλαγής turns και interruptions **4–6 ώρες**. Οι ώρες αυτές είναι τμήματα των εγγεγραμμένων native audio + Voice Conversation + QA workstreams, **όχι προσθήκη στο συνολικό άθροισμα**.

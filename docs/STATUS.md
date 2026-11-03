@@ -32,3 +32,9 @@
 **P0**: Ψευδής ένδειξη επιταχυντή, ασυμφωνία δηλωμένων δυνατοτήτων, έλλειψη συστηματικής επαλήθευσης runtime. **P1**: chat-template, system prompt/history, max tokens, reset που επαναφορτώνει μοντέλο, κλήσεις agent/mobile actions προς LiteRT, εξαίρεση σφαλμάτων. **P1 ασφάλειας**: `fallbackToDestructiveMigration()` σε Room, offline blocking όχι καθολικά τεκμηριωμένο, διατήρηση ευαίσθητων πληροφοριών στα diagnostics.
 
 **Επόμενη έκδοση:** Κανένα νέο APK πριν εγκριθεί η συνολική λίστα του `PLAN_NEXT_APK.md` και περάσουν τα gates του `RELEASE_PROTOCOL.md`.
+
+## Σημαντική διόρθωση τεκμηρίωσης: Greek ASR και TTS επιβεβαιώθηκαν στο Termux (2026-11-03)
+
+Η προηγούμενη διατύπωση «δεν έχει δοκιμαστεί ελληνική ομιλία» ισχύει **μόνο για το Box APK**. Σε προηγούμενη πραγματική δοκιμή της ίδιας συσκευής με Termux και `llama-server`, το LFM3-Omni-2B Q8_0 + matching `mmproj` αναγνώρισε ελληνική ερώτηση («5+7» → γραπτό «12») και παρήγαγε **κατανοητή ελληνική γυναικεία ομιλία** με `/tts` (WAV 24 kHz). Το realtime HTML demo έκανε διακοπές και προβλήματα ελληνικής φωνής. Άρα βασική ελληνική speech input/output **device-observed στο Termux**, αλλά **όχι υλοποιημένη στο Box GGUF JNI**. Λεπτομέρειες: `docs/DEVICE_TESTS.md`.
+
+Απαιτούμενο: νέο Box Voice Conversation να αξιοποιεί πρώτα εγγενή audio διαδρομή ανά μοντέλο και γλώσσα· για άλλα μοντέλα, μόνο ρητά επιβεβαιωμένο Greek support, χωρίς ψευδές capability flag.

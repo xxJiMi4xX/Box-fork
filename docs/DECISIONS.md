@@ -18,3 +18,9 @@
 
 ## Πρότυπο νέας απόφασης
 ADR ID · ημερομηνία · πρόβλημα · εναλλακτικές · απόφαση · αιτιολόγηση · αλλαγές · SHA · status επαλήθευσης.
+
+## ADR-006 — Ελληνική native φωνή του μοντέλου ως πρώτη επιλογή (2026-11-03)
+
+**Evidence:** LFM3-Omni-2B Q8_0 + matching mmproj στο Poco/Termux: λειτουργική ελληνική speech input («5+7»→«12») και ελληνική `/tts` WAV output 24 kHz. Realtime HTML ασταθές. Τα tests αυτά δεν έχουν μεταφερθεί στο Box.
+**Απόφαση:** Αξιοποιούμε πρώτα τα εγγενή audio-in/audio-out interfaces του μοντέλου, δημιουργούμε τοπικό Greek-first Voice Conversation mode και διακριτό capability profile ανά model/backend/projector/language. Άλλα μοντέλα με επιβεβαιωμένα ελληνικά αποκτούν την ίδια UI λειτουργία.
+**Περιορισμός:** Δεν ισχυριζόμαστε πλήρη voice session, GPU/NPU acceleration ή φωνή ελληνικών για όποιο μοντέλο δεν έχει πραγματικά περάσει δοκιμή. Αν native speech δεν υποστηρίζεται για μοντέλο, εναλλακτική STT/LLM/TTS αναφέρεται ρητά.

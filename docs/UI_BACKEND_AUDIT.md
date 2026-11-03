@@ -71,3 +71,7 @@
 - `runtime/LlamaCppModelHelper.kt`: GGUF image/audio inputs ακόμη απορρίπτονται· model-generated audio δεν έχει κλήση/renderer.
 
 **Απαίτηση επόμενης έκδοσης:** ανεξάρτητο `Voice Conversation` entrypoint στην κύρια διεπαφή, πραγματική διαδρομή μικρόφωνο → inference → speech playback, διατήρηση context, σαφείς καταστάσεις listening/thinking/speaking/paused/error, permission/mute/stop, χειρισμός ηχείου/ακουστικών και δυνατότητα διακοπής. Να μη συγχέεται με Voice Input ή Audio Scribe. Δεν διαφημίζουμε real-time/full-duplex/barge-in μέχρι να επαληθευτούν.
+
+## Διόρθωση provenance: προηγούμενο Termux Greek voice test
+
+Η δήλωση «δεν υπάρχει φωνητική συνομιλία» αφορά το **τρέχον UI του Box Omni** και παραμένει αληθής. Ο χρήστης έχει ήδη επιβεβαιώσει στην ίδια συσκευή **Termux llama-server + Q8_0 + matching mmproj** με λειτουργική ελληνική αναγνώριση ομιλίας και ελληνικό `/tts`. Άρα το πρόβλημα είναι η **έλλειψη JNI/UI διασύνδεσης και αξιοπιστίας voice loop**, όχι η παντελής απουσία βασικής ελληνικής speech ικανότητας του LFM3. Το realtime HTML demo είχε διακοπές. Βλ. `docs/DEVICE_TESTS.md`.
