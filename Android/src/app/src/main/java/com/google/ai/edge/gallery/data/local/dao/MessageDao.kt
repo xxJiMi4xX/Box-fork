@@ -10,10 +10,10 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface MessageDao {
-    @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY timestamp ASC")
+    @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY timestamp ASC, rowid ASC")
     fun getMessagesForConversation(conversationId: String): Flow<List<Message>>
 
-    @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY timestamp ASC")
+    @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY timestamp ASC, rowid ASC")
     suspend fun getMessagesForConversationSync(conversationId: String): List<Message>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
