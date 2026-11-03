@@ -120,22 +120,29 @@ fun ChatView(
 
   val context = LocalContext.current
 
-  // Display and native GGUF context must agree. An explicit conversation ID
-  // is checked against the currently selected model before replay.
-  LaunchedEffect(conversationId, selectedModel.name) {
+  // Re-run after model reinitialization as well as explicit conversation
+  // switches; an unloaded GGUF has no native KV/history even if the UI still
+  // displays messages restored earlier.
+  val modelInitStatus =
+    modelManagerUiState.modelInitializationStatus[selectedModel.name]?.status
+  LaunchedEffect(conversationId, selectedModel.name, modelInitStatus) {
     val llmViewModel = viewModel as? com.google.ai.edge.gallery.ui.llmchat.LlmChatViewModelBase
       ?: return@LaunchedEffect
     llmViewModel.setCurrentConversationModel(selectedModel)
-    llmViewModel.beginHistorySynchronization(selectedModel)
+    val gate = llmViewModel.beginHistorySynchronization(selectedModel)
     var failure: String? = null
     try {
       val convId = conversationId ?: if (autoResumeConversation) {
         llmViewModel.getLatestConversationForModel(selectedModel.name)?.id
       } else null
 
+      val previousId = llmViewModel.getCurrentConversationId(selectedModel)
       if (convId == null) {
-        llmViewModel.beginNewConversation(selectedModel)
-        llmViewModel.setCurrentSystemPrompt("")
+        if (previousId != null) {
+          llmViewModel.stopResponse(selectedModel)
+          llmViewModel.clearAllMessages(selectedModel)
+          llmViewModel.beginNewConversation(selectedModel)
+        }
       } else {
         val conversation = llmViewModel.getConversationById(convId)
           ?: throw IllegalStateException("Αυτή η συνομιλία δεν υπάρχει πλέον")
@@ -144,7 +151,12 @@ fun ChatView(
         }
         val rows = llmViewModel.loadConversationHistory(convId)
           ?: throw IllegalStateException("Αποτυχία ανάγνωσης αποθηκευμένου ιστορικού")
-        if (llmViewModel.uiState.value.messagesByModel[selectedModel.name].isNullOrEmpty()) {
+        if (previousId != convId) {
+          llmViewModel.stopResponse(selectedModel)
+          llmViewModel.clearAllMessages(selectedModel)
+        }
+        if (previousId != convId ||
+            llmViewModel.uiState.value.messagesByModel[selectedModel.name].isNullOrEmpty()) {
           rows.forEach { message ->
             if (message.role == "user" || message.role == "assistant") {
               llmViewModel.addMessage(
@@ -175,7 +187,7 @@ fun ChatView(
       Log.e(TAG, "Unable to synchronize persisted conversation", error)
       failure = error.message ?: "Άγνωστο σφάλμα ιστορικού"
     } finally {
-      llmViewModel.endHistorySynchronization(selectedModel, failure)
+      llmViewModel.endHistorySynchronization(selectedModel, gate, failure)
     }
   }
 
