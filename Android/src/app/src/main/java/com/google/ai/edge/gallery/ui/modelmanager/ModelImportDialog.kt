@@ -84,10 +84,15 @@ import com.google.ai.edge.gallery.ui.common.ensureValidFileName
 import com.google.ai.edge.gallery.ui.common.humanReadableSize
 import java.io.File
 import java.io.FileOutputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.nio.file.AtomicMoveNotSupportedException
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 
 private const val TAG = "AGModelImportDialog"
@@ -397,54 +402,78 @@ private fun importModel(
   onProgress: (Float) -> Unit,
   onError: (String) -> Unit,
 ) {
-  // TODO: handle error.
   coroutineScope.launch(Dispatchers.IO) {
-    // Get the last component of the uri path as the imported file name.
-    val decodedUri = URLDecoder.decode(uri.toString(), StandardCharsets.UTF_8.name())
-    Log.d(TAG, "importing model from $decodedUri. File name: $fileName. File size: $fileSize")
-
-    // Create <app_external_dir>/imports if not exist.
-    val importsDir = File(context.getExternalFilesDir(null), IMPORTS_DIR)
-    if (!importsDir.exists()) {
-      importsDir.mkdirs()
-    }
-
-    // Import by copying the file over.
-    val outputFile = File(context.getExternalFilesDir(null), "$IMPORTS_DIR/$fileName")
-    val outputStream = FileOutputStream(outputFile)
-    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-    var bytesRead: Int
-    var lastSetProgressTs: Long = 0
-    var importedBytes = 0L
-    val inputStream = context.contentResolver.openInputStream(uri)
+    var temporary: File? = null
     try {
-      if (inputStream != null) {
-        while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-          outputStream.write(buffer, 0, bytesRead)
-          importedBytes += bytesRead
-
-          // Report progress every 200 ms.
-          val curTs = System.currentTimeMillis()
-          if (curTs - lastSetProgressTs > 200) {
-            Log.d(TAG, "importing progress: $importedBytes, $fileSize")
-            lastSetProgressTs = curTs
-            if (fileSize != 0L) {
-              onProgress(importedBytes.toFloat() / fileSize.toFloat())
+      val root = context.getExternalFilesDir(null)
+        ?: throw IllegalStateException("App model storage is unavailable")
+      val importsDir = File(root, IMPORTS_DIR)
+      if (!importsDir.isDirectory && !importsDir.mkdirs()) {
+        throw IllegalStateException("Could not create model import directory")
+      }
+      val outputFile = File(importsDir, fileName)
+      // Never overwrite an in-use model or a previous successful import.
+      require(!outputFile.exists()) {
+        "Αυτό το αρχείο μοντέλου υπάρχει ήδη. Διάλεξε διαφορετικό όνομα."
+      }
+      temporary = File.createTempFile(".box-model-", ".partial", importsDir)
+      val staging = temporary
+      var bytesRead: Int
+      var totalBytes = 0L
+      var lastProgressAt = 0L
+      val source = context.contentResolver.openInputStream(uri)
+        ?: throw IllegalStateException("Δεν ήταν δυνατό το άνοιγμα του επιλεγμένου αρχείου")
+      source.use { input ->
+        FileOutputStream(staging).buffered().use { output ->
+          val buffer = ByteArray(256 * 1024)
+          while (true) {
+            bytesRead = input.read(buffer)
+            if (bytesRead == -1) break
+            if (bytesRead == 0) continue
+            output.write(buffer, 0, bytesRead)
+            totalBytes += bytesRead.toLong()
+            if (fileSize > 0 && totalBytes > fileSize) {
+              throw IllegalStateException("Η εισαγωγή υπερέβη το δηλωμένο μέγεθος")
+            }
+            val now = System.currentTimeMillis()
+            if (fileSize > 0 && now - lastProgressAt >= 200) {
+              lastProgressAt = now
+              val progress = (totalBytes.toDouble() / fileSize.toDouble()).toFloat()
+              withContext(Dispatchers.Main) { onProgress(progress.coerceIn(0f, 1f)) }
             }
           }
         }
       }
-    } catch (e: Exception) {
-      e.printStackTrace()
-      onError(e.message ?: "Failed to import")
-      return@launch
+      if (fileSize > 0 && totalBytes != fileSize) {
+        throw IllegalStateException("Το αρχείο δεν αντιγράφηκε ολόκληρο")
+      }
+      if (fileName.endsWith(".gguf", ignoreCase = true)) {
+        val magic = ByteArray(4)
+        val valid = staging.inputStream().use { stream ->
+          stream.read(magic) == 4 && magic.contentEquals(byteArrayOf(71, 71, 85, 70))
+        }
+        require(valid) { "Το αρχείο δεν είναι έγκυρο GGUF" }
+      }
+      try {
+        Files.move(staging.toPath(), outputFile.toPath(), StandardCopyOption.ATOMIC_MOVE)
+      } catch (_: AtomicMoveNotSupportedException) {
+        Files.move(staging.toPath(), outputFile.toPath())
+      }
+      temporary = null
+      withContext(Dispatchers.Main) {
+        onProgress(1f)
+        onDone()
+      }
+    } catch (cancelled: CancellationException) {
+      throw cancelled
+    } catch (error: Exception) {
+      Log.e(TAG, "Model import failed", error)
+      withContext(Dispatchers.Main) {
+        onError(error.message ?: "Η εισαγωγή απέτυχε")
+      }
     } finally {
-      inputStream?.close()
-      outputStream.close()
+      temporary?.let { runCatching { it.delete() } }
     }
-    Log.d(TAG, "import done")
-    onProgress(1f)
-    onDone()
   }
 }
 
