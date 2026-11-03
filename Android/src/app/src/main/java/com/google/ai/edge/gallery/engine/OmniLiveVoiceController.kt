@@ -151,12 +151,34 @@ class OmniLiveVoiceController(private val context: Context) {
                 var silence = 0
                 var total = 0
                 var inSpeech = false
+                var echoTailFrames = 0
 
                 while (currentCoroutineContext().isActive) {
                     val read = audioRecord.read(frame, 0, frame.size, AudioRecord.READ_BLOCKING)
                     if (read < 0) throw IllegalStateException("Η ηχογράφηση διακόπηκε: $read")
                     if (read < 2) continue
                     val available = read and -2
+
+                    // Never mistake the assistant's loudspeaker for a new voice
+                    // unless Android confirms acoustic echo cancellation is enabled.
+                    // With no hardware AEC, genuine barge-in requires headphones
+                    // or manual stop; this is preferable to an endless self-reply loop.
+                    if (OmniVoicePlayback.activePlayers.get() > 0 &&
+                        echo?.enabled != true) {
+                        echoTailFrames = 18
+                        preRoll.clear()
+                        speech.reset()
+                        onset = 0
+                        voiced = 0
+                        silence = 0
+                        total = 0
+                        inSpeech = false
+                        continue
+                    }
+                    if (echoTailFrames > 0) {
+                        echoTailFrames--
+                        continue
+                    }
                     var power = 0.0
                     for (i in 0 until available step 2) {
                         val sample = (frame[i].toInt() and 255) or (frame[i + 1].toInt() shl 8)
