@@ -128,6 +128,11 @@ fun OmniVoiceScreen(
     }
     var unloading by remember(selected?.name) { mutableStateOf(false) }
     var runtimeError by remember(selected?.name) { mutableStateOf<String?>(null) }
+    var useMixedVoice by remember(selected?.name) {
+        mutableStateOf(selected?.let {
+            VoiceGgufRuntimeSettings.mixedVoiceEnabled(context, it.getPath(context))
+        } ?: false)
+    }
     val status = selected?.let { manager.modelInitializationStatus[it.name] }
     val isInitialized = status?.status == ModelInitializationStatusType.INITIALIZED
     val engine = selected?.instance as? LlamaCppEngine
@@ -315,6 +320,30 @@ fun OmniVoiceScreen(
     
                 }
 
+
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !unloading,
+                    onClick = {
+                        val next = !useMixedVoice
+                        runCatching {
+                            VoiceGgufRuntimeSettings.setMixedVoiceEnabled(
+                                context, selected.getPath(context), next)
+                        }.onSuccess {
+                            useMixedVoice = next
+                            runtimeError = null
+                        }.onFailure { runtimeError = it.message }
+                    },
+                ) {
+                    Text(if (useMixedVoice) "Ταυτόχρονη φωνή: ενεργή" else
+                        "Ταυτόχρονη φωνή: ανενεργή")
+                }
+                if (useMixedVoice) Text(
+                    "Πειραματική παραγωγή κειμένου και PCM μαζί. " +
+                    "Απενεργοποίησέ την για να χρησιμοποιήσεις την παλιά φωνή.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { ggufPicker.launch(arrayOf("*/*")) }) {
                         Text("Εισαγωγή GGUF")
@@ -412,6 +441,7 @@ fun OmniVoiceScreen(
                     OmniLiveVoicePanel(
                         model = selected,
                         viewModel = viewModel,
+                        useMixedVoice = useMixedVoice,
                         onError = { viewModel.reportVoiceError(selected, it) },
                     )
                 } else {
