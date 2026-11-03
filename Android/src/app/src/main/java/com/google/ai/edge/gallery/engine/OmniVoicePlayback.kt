@@ -56,7 +56,7 @@ class OmniVoicePlayback {
         }
     }
 
-    suspend fun play(wave: WavPcm16.Mono) = withContext(Dispatchers.IO) {
+    suspend fun play(wave: WavPcm16.Mono, onFirstPcmPlayed: (() -> Unit)? = null) = withContext(Dispatchers.IO) {
         require(wave.pcm16.isNotEmpty())
         stop()
         val minimum = AudioTrack.getMinBufferSize(
@@ -114,6 +114,7 @@ class OmniVoicePlayback {
             activePlayers.incrementAndGet()
             counted = true
             var offset = 0
+            var firstPcmReported = false
             while (offset < wave.pcm16.size && currentCoroutineContext().isActive &&
                 synchronized(lock) { active === player }) {
                 privateOutputRouted.set(privateDevice(player.routedDevice))
@@ -122,6 +123,10 @@ class OmniVoicePlayback {
                     wave.pcm16, offset, count, AudioTrack.WRITE_BLOCKING)
                 if (written <= 0) break
                 offset += written
+                if (!firstPcmReported && player.playbackHeadPosition > 0) {
+                    firstPcmReported = true
+                    onFirstPcmPlayed?.invoke()
+                }
             }
             val maxPlaybackMs = wave.samples.toLong() * 1000 / wave.sampleRate + 5000L
             withTimeoutOrNull(maxPlaybackMs) {
@@ -129,8 +134,16 @@ class OmniVoicePlayback {
                     synchronized(lock) { active === player } &&
                     runCatching { player.playState == AudioTrack.PLAYSTATE_PLAYING }.getOrDefault(false) &&
                     runCatching { player.playbackHeadPosition.toLong() < wave.samples.toLong() }.getOrDefault(false)) {
+                    if (!firstPcmReported && player.playbackHeadPosition > 0) {
+                        firstPcmReported = true
+                        onFirstPcmPlayed?.invoke()
+                    }
                     delay(30)
                 }
+            }
+            if (!firstPcmReported && player.playbackHeadPosition > 0 &&
+                currentCoroutineContext().isActive && synchronized(lock) { active === player }) {
+                onFirstPcmPlayed?.invoke()
             }
         } finally {
             if (counted && activePlayers.decrementAndGet() == 0) {
