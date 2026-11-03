@@ -138,20 +138,38 @@ void LLMInference::startCompletion(const char *query) {
             [](const auto &m) { return m.first != "system"; }), messages_.end());
     }
     messages_.emplace_back("user", query);
-    std::vector<llama_chat_message> chat;
-    chat.reserve(messages_.size());
-    for (const auto &m : messages_) chat.push_back({m.first.c_str(), m.second.c_str()});
-    int32_t needed = llama_chat_apply_template(chatTemplate_.c_str(), chat.data(), chat.size(),
-                                                true, nullptr, 0);
-    if (needed < 0 || needed > 1048576)
-        throw std::runtime_error("Model chat template is incompatible");
-    std::vector<char> buffer(static_cast<size_t>(needed) + 1, '\0');
-    int32_t actual = llama_chat_apply_template(chatTemplate_.c_str(), chat.data(), chat.size(),
-                                               true, buffer.data(), static_cast<int32_t>(buffer.size()));
-    if (actual < 0 || actual > needed) throw std::runtime_error("Chat template rendering failed");
-    auto tokens = tokenize(std::string(buffer.data(), static_cast<size_t>(actual)));
-    if (tokens.empty() || tokens.size() + 1 > llama_n_ctx(context_))
-        throw std::runtime_error("Conversation exceeds llama context");
+    auto renderConversation = [&]() -> std::vector<llama_token> {
+        std::vector<llama_chat_message> chat;
+        chat.reserve(messages_.size());
+        for (const auto &m : messages_) chat.push_back({m.first.c_str(), m.second.c_str()});
+        int32_t needed = llama_chat_apply_template(
+            chatTemplate_.c_str(), chat.data(), chat.size(), true, nullptr, 0);
+        if (needed < 0 || needed > 1048576)
+            throw std::runtime_error("Model chat template is incompatible");
+        std::vector<char> buffer(static_cast<size_t>(needed) + 1, '\0');
+        const int32_t actual = llama_chat_apply_template(
+            chatTemplate_.c_str(), chat.data(), chat.size(), true,
+            buffer.data(), static_cast<int32_t>(buffer.size()));
+        if (actual < 0 || actual > needed)
+            throw std::runtime_error("Chat template rendering failed");
+        return tokenize(std::string(buffer.data(), static_cast<size_t>(actual)));
+    };
+
+    auto tokens = renderConversation();
+    // Preserve the system instruction and most recent user turn. When the chat
+    // reaches the context boundary, evict oldest complete user/assistant turns.
+    while (!tokens.empty() && tokens.size() + 1 > llama_n_ctx(context_)) {
+        size_t oldest = !messages_.empty() && messages_.front().first == "system" ? 1 : 0;
+        if (oldest >= messages_.size() - 1)
+            throw std::runtime_error("Latest turn is larger than the GGUF context window");
+        size_t remove = 1;
+        if (messages_[oldest].first == "user" &&
+            oldest + 1 < messages_.size() - 1 &&
+            messages_[oldest + 1].first == "assistant") remove = 2;
+        messages_.erase(messages_.begin() + oldest, messages_.begin() + oldest + remove);
+        tokens = renderConversation();
+    }
+    if (tokens.empty()) throw std::runtime_error("Cannot tokenize the chat prompt");
     llama_memory_clear(llama_get_memory(context_), false);
     llama_sampler_reset(sampler_);
     response_.clear();

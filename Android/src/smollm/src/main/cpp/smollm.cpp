@@ -87,7 +87,7 @@ jstring javaString(JNIEnv *env, const std::string &value) {
                 throw std::runtime_error("Model returned malformed UTF-8");
             cp = (cp << 6) | (ptr[i++] & 0x3F);
         }
-        if (cp >= 0xD800 && cp <= 0xDFFF || cp > 0x10FFFF)
+        if ((cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF)
             throw std::runtime_error("Model returned invalid Unicode");
         if (cp <= 0xFFFF) text.push_back(static_cast<jchar>(cp));
         else {
@@ -96,6 +96,7 @@ jstring javaString(JNIEnv *env, const std::string &value) {
             text.push_back(static_cast<jchar>(0xDC00 + (cp & 0x3FF)));
         }
     }
+    if (text.empty()) return env->NewStringUTF("");
     return env->NewString(text.data(), static_cast<jsize>(text.size()));
 }
 
