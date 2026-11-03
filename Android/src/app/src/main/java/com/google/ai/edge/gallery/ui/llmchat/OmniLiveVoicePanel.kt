@@ -19,6 +19,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,9 +40,11 @@ import com.google.ai.edge.gallery.ui.common.chat.ChatSide
 fun OmniLiveVoicePanel(
     model: Model,
     viewModel: LlmChatViewModelBase,
+    useMixedVoice: Boolean = false,
     onError: (String) -> Unit,
 ) {
     val context = LocalContext.current
+    val currentMixedVoice by rememberUpdatedState(useMixedVoice)
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
     val controller = remember(model.name) {
@@ -74,6 +77,7 @@ fun OmniLiveVoicePanel(
                             model = model,
                             input = "",
                             audioMessages = listOf(userClip),
+                            useMixedVoice = currentMixedVoice,
                             onDone = { if (enabled) status = "Ακούω..." },
                             onError = { message ->
                                 if (enabled) status = "Ακούω..."
