@@ -88,7 +88,8 @@ void LLMInference::loadModel(const char *path, float minP, float temperature, fl
         const mtmd_helper_cap capabilities = mtmd_helper_get_capabilities(model_, mmproj_);
         const mtmd_gen_audio_info audioInfo = mtmd_gen_audio_get_info(mmproj_);
         const int audioRate = mtmd_get_audio_sample_rate(mmproj_);
-        if (!capabilities.audio || !mtmd_support_audio(mmproj_) || audioRate < 8000 ||
+        if (!capabilities.chat || !capabilities.text_gen ||
+            !capabilities.audio || !mtmd_support_audio(mmproj_) || audioRate < 8000 ||
             !capabilities.audio_gen || audioInfo.type != MTMD_GEN_AUDIO_TYPE_LFM3A ||
             audioInfo.sample_rate < 8000)
             throw std::runtime_error(
