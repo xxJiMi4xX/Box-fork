@@ -36,6 +36,7 @@ public:
     std::string benchModel(int pp, int tg, int pl, int nr);
     int audioInputSampleRate();
     int audioCapabilities();
+    std::string getHardwareInfo();
     void resetConversation(const char *systemPrompt);
     std::string transcribeAudio(const std::vector<float> &pcm);
     std::vector<uint8_t> synthesizeSpeech(const std::string &text);
