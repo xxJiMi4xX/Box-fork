@@ -85,10 +85,12 @@ fun OmniLiveVoicePanel(
                 onError = { reason ->
                     status = "Πρόβλημα μικροφώνου"
                     enabled = false
+                    viewModel.stopResponse(model)
                     onError(reason)
                 },
                 onStopped = {
                     if (!controller.isActive) {
+                        viewModel.stopResponse(model)
                         enabled = false
                         status = "Απενεργοποιημένο"
                     }
@@ -113,7 +115,9 @@ fun OmniLiveVoicePanel(
 
     DisposableEffect(controller, lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP || event == Lifecycle.Event.ON_DESTROY) {
+            if (event == Lifecycle.Event.ON_PAUSE ||
+                event == Lifecycle.Event.ON_STOP ||
+                event == Lifecycle.Event.ON_DESTROY) {
                 controller.stop()
                 viewModel.stopResponse(model)
                 enabled = false

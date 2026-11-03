@@ -7,6 +7,7 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.AudioFormat
+import android.media.AudioDeviceInfo
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
@@ -162,6 +163,8 @@ class OmniLiveVoiceController(private val context: Context) {
                 var total = 0
                 var inSpeech = false
                 var echoTailFrames = 0
+                var audioRouteRefresh = 0
+                var privateOutput = false
 
                 while (currentCoroutineContext().isActive) {
                     val read = audioRecord.read(frame, 0, frame.size, AudioRecord.READ_BLOCKING)
@@ -169,12 +172,25 @@ class OmniLiveVoiceController(private val context: Context) {
                     if (read < 2) continue
                     val available = read and -2
 
-                    // Never mistake the assistant's loudspeaker for a new voice
-                    // unless Android confirms acoustic echo cancellation is enabled.
-                    // With no hardware AEC, genuine barge-in requires headphones
-                    // or manual stop; this is preferable to an endless self-reply loop.
+                    // With headphones or Android AEC, a voice can interrupt
+                    // playback. Without either, ignore loudspeaker feedback.
+                    if (audioRouteRefresh-- <= 0) {
+                        audioRouteRefresh = 50
+                        privateOutput = audioManager.getDevices(
+                            AudioManager.GET_DEVICES_OUTPUTS).any { output ->
+                            when (output.type) {
+                                AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                                AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                                AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+                                AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                                AudioDeviceInfo.TYPE_USB_HEADSET,
+                                AudioDeviceInfo.TYPE_BLE_HEADSET -> true
+                                else -> false
+                            }
+                        }
+                    }
                     if (OmniVoicePlayback.activePlayers.get() > 0 &&
-                        echo?.enabled != true) {
+                        echo?.enabled != true && !privateOutput) {
                         echoTailFrames = 18
                         preRoll.clear()
                         speech.reset()
