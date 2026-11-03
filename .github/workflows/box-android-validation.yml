@@ -2,7 +2,7 @@ name: Box Android integration validation
 
 on:
   push:
-    branches: [feature/lfm3-omni-android, feature/lfm3-omni-audio-stage]
+    branches: [feature/lfm3-omni-android]
     paths:
       - "Android/**"
       - ".gitmodules"
