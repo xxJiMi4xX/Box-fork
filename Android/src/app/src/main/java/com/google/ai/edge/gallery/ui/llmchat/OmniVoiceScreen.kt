@@ -91,9 +91,10 @@ fun OmniVoiceScreen(
         GgufAudioFiles.findProjector(context, it.getPath(context))
     }
 
-    DisposableEffect(viewModel) {
+    DisposableEffect(viewModel, selected?.name) {
         viewModel.configureVoiceOutput(context.applicationContext)
-        onDispose { selected?.let { viewModel.stopResponse(it) } }
+        val activeModel = selected
+        onDispose { activeModel?.let { viewModel.stopResponse(it) } }
     }
 
     // Keep the model manager's selected model in sync with the dedicated
@@ -257,6 +258,20 @@ fun OmniVoiceScreen(
                             context = context, task = it, model = selected, force = true
                         )
                     }
+                }
+                if (projector != null && !hasFullAudio &&
+                    (status?.status == ModelInitializationStatusType.ERROR || modelLoaded)) {
+                    OutlinedButton(
+                        onClick = {
+                            task?.let {
+                                viewModel.stopResponse(selected)
+                                modelManagerViewModel.initializeModel(
+                                    context = context, task = it,
+                                    model = selected, force = true,
+                                )
+                            }
+                        }
+                    ) { Text("Επανέλεγχος φόρτωσης μοντέλου") }
                 }
 
                 if (hasFullAudio) {
