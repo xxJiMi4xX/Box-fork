@@ -160,27 +160,24 @@ abstract class ChatViewModel : ViewModel() {
     partialContent: String,
     latencyMs: Float,
   ) {
-    val newMessagesByModel = _uiState.value.messagesByModel.toMutableMap()
-    val newMessages = newMessagesByModel[model.name]?.toMutableList() ?: mutableListOf()
-    if (newMessages.isNotEmpty()) {
-      val lastMessage = newMessages.last()
-      if (lastMessage is ChatMessageText) {
-        val newContent = processLlmResponse(response = "${lastMessage.content}${partialContent}")
-        val newLastMessage =
+    _uiState.update { state ->
+      val byModel = state.messagesByModel.toMutableMap()
+      val messages = byModel[model.name]?.toMutableList() ?: mutableListOf()
+      val last = messages.lastOrNull()
+      if (last is ChatMessageText && last.side == ChatSide.AGENT) {
+        val nextContent = processLlmResponse(response = "${last.content}${partialContent}")
+        messages[messages.lastIndex] =
           ChatMessageText(
-            content = newContent,
-            side = lastMessage.side,
+            content = nextContent,
+            side = last.side,
             latencyMs = latencyMs,
-            accelerator = lastMessage.accelerator,
-            hideSenderLabel = lastMessage.hideSenderLabel,
+            accelerator = last.accelerator,
+            hideSenderLabel = last.hideSenderLabel,
           )
-        newMessages.removeAt(newMessages.size - 1)
-        newMessages.add(newLastMessage)
       }
+      byModel[model.name] = messages
+      state.copy(messagesByModel = byModel)
     }
-    newMessagesByModel[model.name] = newMessages
-    val newUiState = _uiState.value.copy(messagesByModel = newMessagesByModel)
-    _uiState.update { newUiState }
   }
 
   fun updateLastTextMessageLlmBenchmarkResult(
@@ -203,17 +200,14 @@ abstract class ChatViewModel : ViewModel() {
   }
 
   fun replaceLastMessage(model: Model, message: ChatMessage, type: ChatMessageType) {
-    val newMessagesByModel = _uiState.value.messagesByModel.toMutableMap()
-    val newMessages = newMessagesByModel[model.name]?.toMutableList() ?: mutableListOf()
-    if (newMessages.size > 0) {
-      val index = newMessages.indexOfLast { it.type == type }
-      if (index >= 0) {
-        newMessages[index] = message
-      }
+    _uiState.update { state ->
+      val byModel = state.messagesByModel.toMutableMap()
+      val messages = byModel[model.name]?.toMutableList() ?: mutableListOf()
+      val index = messages.indexOfLast { it.type == type }
+      if (index >= 0) messages[index] = message
+      byModel[model.name] = messages
+      state.copy(messagesByModel = byModel)
     }
-    newMessagesByModel[model.name] = newMessages
-    val newUiState = _uiState.value.copy(messagesByModel = newMessagesByModel)
-    _uiState.update { newUiState }
   }
 
   fun replaceMessage(model: Model, index: Int, message: ChatMessage) {
