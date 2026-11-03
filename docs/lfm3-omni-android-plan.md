@@ -121,3 +121,58 @@ Total estimated engineering budget: **39-69 hours**, excluding optional GPU acce
 5. **Regression and APK (6–10 h):** GitHub CI, artifact, LiteRT-LM text and NPU-library packaging regression, plus on-device tests. NPU runtime acceleration is a separate, unproven claim.
 
 **Hard acceptance criteria:** no silent discarded audio, correct matched mmproj, no duplicate model turns or invalid native handles, comprehensible Greek input and answer, audible Greek model output, 10+ continuous turns, stop/unload without crash, original LiteRT-LM still works, and downloadable reproducible APK. The already-approved total budget remains **39–69 engineering hours** (gates 0–6, not counting separately scoped NPU hardware work or optional GPU).
+
+
+## Stages 1–5: implementation checkpoint (3 November 2026)
+
+Development branch: `feature/lfm3-omni-audio-stage`. Stable `main` unchanged.
+This branch is deliberately excluded from the push-triggered Android APK workflow;
+the user requested implementation through stage 5, not a final APK.
+
+### Source changes
+
+1. **JNI and llama.cpp:** pinned upstream v0.8.0; replaced private
+   `common_tokenize` / `common_token_to_piece` use with public llama API;
+   handles are registry-managed and native cancellation uses an atomic request.
+   Native chat reconstruction evicts oldest turns on context exhaustion.
+2. **libmtmd projector:** app searches the matching sidecar, accepts user
+   selection through Android Storage Access Framework, imports it into app-private
+   storage and passes an explicit path to `mtmd_init_from_file`.
+3. **Greek speech-to-text:** Box's existing 16-bit PCM WAV recorder is parsed,
+   validated and resampled to the mmproj's input sample rate; LFM3 ASR
+   uses `Perform ASR in Greek.` and the model's media tokenizer.
+4. **Greek text-to-speech:** full text answer is given to the LFM3 audio
+   generation helper with `Perform TTS in Greek using a female voice.`,
+   explicit audio-start mode and WAV output.
+5. **Box UI integration:** compatible GGUF models show the microphone in
+   LLM Chat independently of their older imported audio metadata.
+   User audio is transcribed into the conversation, text inference runs
+   through the original chat display, and the generated reply is emitted
+   as a playable audio chat message with automatic playback.
+
+### Important boundaries / not yet verified
+
+- **No Android build or device run has been executed for this stage branch.**
+  Source completion is NOT evidence that the ASR/TTS pipeline works on-device.
+- The *text-only* baseline using the v0.8.0 native bridge passed GitHub Actions
+  on the separate integration branch. That does not validate these new changes.
+- The integrated mode is **push-to-talk → automatic spoken answer**, not an
+  always-listening, VAD-driven full-duplex live voice call. The app plays
+  one synthesized response at a time.
+- Image/video inputs have not been routed through this voice-specific path,
+  and MTK NPU acceleration for GGUF is not implied.
+- Greek speech is a published capability of LFM3-Omni, but real-world
+  latency, pronunciation, transcription accuracy and stability require
+  later on-device verification.
+- Full regression and release packaging remain in stages 6–7. Do not
+  describe this source checkpoint as a tested, production-ready APK.
+
+### Stage 6 verification matrix (not executed)
+
+- Android arm64 native compilation, JNI symbol/linkage integrity
+- Correct `LFM3-Omni-2B` GGUF + matching mmproj import and load
+- Greek short/long utterances, noisy recordings, WAV rate conversion
+- Multi-turn replies, short context truncation, Unicode/emoji text
+- TTS WAV sample rate and playback; stop during ASR, text and TTS
+- Model reload, interrupted import, missing/incompatible projector
+- LiteRT-LM and MediaTek dispatch regressions against stable main
