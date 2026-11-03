@@ -36,6 +36,23 @@ endif()
 get_filename_component(LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../llama.cpp" ABSOLUTE)
 add_subdirectory("${LLAMA_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/llama-build")
 
+# Android NDK ships the Vulkan C API, but llama.cpp's Vulkan backend also
+# requires Vulkan-Hpp (vulkan/vulkan.hpp). Never add /usr/include directly to
+# Android compilation: that would leak host glibc headers into the NDK build.
+if(ANDROID AND GGML_VULKAN)
+    if(NOT TARGET ggml-vulkan)
+        message(FATAL_ERROR "Vulkan backend was requested but ggml-vulkan is unavailable")
+    endif()
+    if(NOT DEFINED ENV{BOX_VULKAN_HEADERS_DIR} OR
+       NOT EXISTS "$ENV{BOX_VULKAN_HEADERS_DIR}/vulkan/vulkan.hpp")
+        message(FATAL_ERROR
+            "Set BOX_VULKAN_HEADERS_DIR to an isolated Vulkan SDK headers root "
+            "containing vulkan/vulkan.hpp (host Vulkan-Hpp, target-safe headers)")
+    endif()
+    target_include_directories(ggml-vulkan SYSTEM PRIVATE "$ENV{BOX_VULKAN_HEADERS_DIR}")
+endif()
+
+
 add_library(smollm SHARED LLMInference.cpp smollm.cpp)
 target_compile_features(smollm PRIVATE cxx_std_17)
 target_include_directories(smollm PRIVATE "${LLAMA_DIR}/include" "${LLAMA_DIR}/ggml/include")
