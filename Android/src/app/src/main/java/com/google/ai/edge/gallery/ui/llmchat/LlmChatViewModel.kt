@@ -18,6 +18,7 @@ package com.google.ai.edge.gallery.ui.llmchat
 
 import android.content.Context
 import android.graphics.Bitmap
+import java.io.ByteArrayOutputStream
 import android.util.Log
 import androidx.lifecycle.viewModelScope
 import com.google.ai.edge.gallery.data.ConfigKeys
@@ -58,6 +59,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -207,6 +209,36 @@ open class LlmChatViewModelBase() : ChatViewModel() {
         "Το πλήρες ιστορικό παραμένει αποθηκευμένο, αλλά μόνο οι τελευταίοι ολοκληρωμένοι γύροι χρησιμοποιούνται στο ενεργό context."
       )
     }
+  }
+
+  /**
+   * Feed bounded, natural sentence/phrase chunks to the GGUF speech decoder.
+   * Playback of the first chunk begins while later chunks are still pending.
+   * This is not simultaneous text-token/audio generation.
+   */
+  private fun segmentSpeech(text: String, limit: Int = 200): List<String> {
+    require(limit in 80..512)
+    val pieces = mutableListOf<String>()
+    var remaining = text.trim()
+    while (remaining.isNotEmpty()) {
+      if (remaining.length <= limit) {
+        pieces += remaining
+        break
+      }
+      val candidate = remaining.substring(0, limit)
+      val punctuation = candidate.indexOfLast { it == '.' || it == '!' ||
+        it == '?' || it == ';' || it == '\n' }
+      val whitespace = candidate.indexOfLast { it.isWhitespace() }
+      val boundary = when {
+        punctuation >= limit / 3 -> punctuation + 1
+        whitespace >= limit / 3 -> whitespace + 1
+        else -> limit
+      }
+      val segment = remaining.substring(0, boundary).trim()
+      if (segment.isNotEmpty()) pieces += segment
+      remaining = remaining.substring(boundary).trimStart()
+    }
+    return pieces
   }
 
   private suspend fun requireHistoryReady(model: Model) {
@@ -652,15 +684,35 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                   voicePlaybackJob?.cancel()
                   voicePlaybackJob = viewModelScope.launch(Dispatchers.IO) {
                     try {
-                      val wav = voiceEngine.synthesizeSpeech(spokenAnswer)
-                      val audio = WavPcm16.read(wav)
+                      val accumulated = ByteArrayOutputStream()
+                      var clipRate = 0
+                      val pieces = segmentSpeech(spokenAnswer)
+                      require(pieces.isNotEmpty()) { "Η φωνητική απάντηση είναι κενή" }
+                      for (piece in pieces) {
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                        if (requestEpoch.get() != epoch) return@launch
+                        val wav = voiceEngine.synthesizeSpeech(piece)
+                        val audio = WavPcm16.read(wav)
+                        if (clipRate == 0) clipRate = audio.sampleRate
+                        check(clipRate == audio.sampleRate) {
+                          "Η σύνθεση ήχου άλλαξε συχνότητα μεταξύ τμημάτων"
+                        }
+                        check(accumulated.size().toLong() + audio.pcm16.size <= 8L * 1024 * 1024) {
+                          "Η απάντηση ξεπέρασε το όριο μνήμης ηχητικής αναπαραγωγής"
+                        }
+                        accumulated.write(audio.pcm16)
+                        if (requestEpoch.get() != epoch) return@launch
+                        // A new voice turn interrupts either synthesis or the
+                        // current clip. Never start a stale audio segment.
+                        voicePlayback.play(audio)
+                      }
                       withContext(Dispatchers.Main) {
                         if (requestEpoch.get() != epoch) return@withContext
                         addMessage(
                           model = model,
                           message = ChatMessageAudioClip(
-                            audioData = audio.pcm16,
-                            sampleRate = audio.sampleRate,
+                            audioData = accumulated.toByteArray(),
+                            sampleRate = clipRate,
                             side = ChatSide.AGENT,
                           ),
                         )
@@ -668,24 +720,16 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                         setInProgress(false)
                         onDone()
                       }
-                      // withContext(Main) can return normally from its own
-                      // local early return. Recheck the turn epoch here:
-                      // never play speech belonging to an interrupted turn.
-                      if (requestEpoch.get() != epoch ||
-                          !kotlinx.coroutines.currentCoroutineContext().isActive) {
-                        return@launch
-                      }
-                      voicePlayback.play(audio)
-                    } catch (e: CancellationException) {
-                      throw e
-                    } catch (e: Exception) {
-                      Log.e(TAG, "Greek speech synthesis/playback failed", e)
+                    } catch (cancelled: CancellationException) {
+                      throw cancelled
+                    } catch (error: Exception) {
+                      Log.e(TAG, "Greek speech synthesis/playback failed", error)
                       withContext(Dispatchers.Main) {
                         if (requestEpoch.get() == epoch) {
                           setPreparing(false)
                           setInProgress(false)
                           onDone()
-                          reportVoiceError(model, e.message ?: "Η σύνθεση φωνής απέτυχε")
+                          reportVoiceError(model, error.message ?: "Η σύνθεση φωνής απέτυχε")
                         }
                       }
                     }
