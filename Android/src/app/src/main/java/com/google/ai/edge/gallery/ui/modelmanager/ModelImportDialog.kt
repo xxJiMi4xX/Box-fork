@@ -416,8 +416,8 @@ private fun importModel(
       require(!outputFile.exists()) {
         "Αυτό το αρχείο μοντέλου υπάρχει ήδη. Διάλεξε διαφορετικό όνομα."
       }
-      temporary = File.createTempFile(".box-model-", ".partial", importsDir)
-      val staging = temporary
+      val staging = File.createTempFile(".box-model-", ".partial", importsDir)
+      temporary = staging
       var bytesRead: Int
       var totalBytes = 0L
       var lastProgressAt = 0L
