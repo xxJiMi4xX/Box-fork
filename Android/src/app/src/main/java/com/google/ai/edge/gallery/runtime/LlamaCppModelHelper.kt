@@ -172,7 +172,9 @@ object LlamaCppModelHelper : LlmModelHelper {
                 resultListener("", true, null)
             },
             onCancelled = {
-                resultListener("", true, null)
+                // A canceled turn was rolled back in native history. Never
+                // tell the ViewModel it was a completed answer (or trigger TTS).
+                cleanUpListener()
             },
             onError = { e ->
                 Log.e(TAG, "Inference error", e)

@@ -38,6 +38,7 @@ class LlamaCppEngine {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val nativeMutex = Mutex()
     private val lifecycleEpoch = AtomicLong(0L)
+    private val generationEpoch = AtomicLong(0L)
 
     var lastLoadParams: SmolLM.InferenceParams? = null
         private set
@@ -80,6 +81,7 @@ class LlamaCppEngine {
         loadJob?.cancel()
         val epoch = lifecycleEpoch.incrementAndGet()
         isModelLoaded.set(false)
+        supportsGreekVoice = false
         val pendingTeardown = latestTeardown.get()
         loadJob = scope.launch {
             try {
@@ -169,13 +171,16 @@ class LlamaCppEngine {
         check(Looper.myLooper() != Looper.getMainLooper()) {
             "GGUF conversation reset must be dispatched off the Android main thread"
         }
+        val loadedEpoch = lifecycleEpoch.get()
         val activeGeneration = generationJob
         stopGeneration()
         try {
             runBlocking(Dispatchers.IO) {
                 activeGeneration?.join()
                 nativeMutex.withLock {
-                    check(isModelLoaded.get()) { "Model is not loaded" }
+                    check(isModelLoaded.get() && lifecycleEpoch.get() == loadedEpoch) {
+                        "The GGUF model changed during conversation reset"
+                    }
                     instance.resetConversation(systemPrompt)
                 }
             }
@@ -228,10 +233,13 @@ class LlamaCppEngine {
             return
         }
         stopGeneration()
+        val epoch = generationEpoch.incrementAndGet()
         generationJob = scope.launch {
             try {
                 val result = nativeMutex.withLock {
-                    check(isModelLoaded.get()) { "Model was unloaded" }
+                    check(isModelLoaded.get() && generationEpoch.get() == epoch) {
+                        "Model was unloaded or this response was superseded"
+                    }
                     currentCoroutineContext().ensureActive()
                     isGenerating = true
                     val model = instance
@@ -269,13 +277,19 @@ class LlamaCppEngine {
                         contextLengthUsed = model.getContextLengthUsed(),
                     )
                 }
-                withContext(Dispatchers.Main) { onComplete(result) }
+                withContext(Dispatchers.Main) {
+                    if (generationEpoch.get() == epoch) onComplete(result)
+                }
             } catch (_: CancellationException) {
-                withContext(NonCancellable + Dispatchers.Main) { onCancelled() }
+                withContext(NonCancellable + Dispatchers.Main) {
+                    if (generationEpoch.get() == epoch) onCancelled()
+                }
             } catch (error: Exception) {
-                withContext(Dispatchers.Main) { onError(error) }
+                withContext(Dispatchers.Main) {
+                    if (generationEpoch.get() == epoch) onError(error)
+                }
             } finally {
-                isGenerating = false
+                if (generationEpoch.get() == epoch) isGenerating = false
             }
         }
     }
@@ -297,6 +311,9 @@ class LlamaCppEngine {
     }
 
     fun stopGeneration() {
+        generationEpoch.incrementAndGet()
+        // Native requestStop writes an atomic flag and is safe while JNI
+        // holds its model mutex for a long ASR or synthesis operation.
         runCatching { instance.requestStop() }
         generationJob?.cancel()
         isGenerating = false
