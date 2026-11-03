@@ -128,9 +128,10 @@ object LlamaCppModelHelper : LlmModelHelper {
             return
         }
 
-        // Note: llama.cpp text-only — images/audio not supported in this path
-        if (images.isNotEmpty()) {
-            Log.w(TAG, "Image input not supported with llama.cpp engine, ignoring ${images.size} images")
+        // Stage 1 uses a text-only llama.cpp bridge. Multimodal mtmd input is added after native validation.
+        if (images.isNotEmpty() || audioClips.isNotEmpty()) {
+            onError("This GGUF backend does not yet accept image or audio input.")
+            return
         }
 
         engine.generateResponse(
