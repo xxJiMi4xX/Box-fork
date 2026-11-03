@@ -94,3 +94,30 @@ Total estimated engineering budget: **39-69 hours**, excluding optional GPU acce
 - Investigate one failure class at a time. Preserve logs and reproducible revision IDs.
 - Do not alter the stable `main` branch during development.
 - Do not claim a functional voice APK until verified on a real Android device.
+
+## Restart checkpoint — 2026-11-03
+
+**Verified GitHub state**
+
+- Repo: `xxJiMi4xX/Box-fork`; working branch: `feature/lfm3-omni-android`. Baseline main: `d9769a7`.
+- Baseline Android CI **passed** on commit `e4793518` (run `41656831949`), including arm64 APK and MediaTek dispatch/compiler `.so` packaging. This does **not** establish any successful LFM3-Omni inference, Greek voice or device NPU operation.
+- Separate experiment repo `xxJiMi4xX/test1` failed on run `41641161301` with unresolved `common_tokenize` and `common_token_to_piece`. That experiment changed llama.cpp in an ephemeral checkout; it is **not** the implementation branch and its fix was **not** merged.
+- The implementation branch's GGUF native sources remain the old text-only `smollm` JNI implementation. In `LLMInference.cpp`, `common_* ` helper symbols and manually constructed `llama_batch` still need replacement by supported public llama APIs. Native cancellation/unload synchronization and message ownership also need correction.
+- `SmolLM.kt` exposes only text generation; there is no mmproj handle, PCM/audio input, synthesized audio output or native stream API. `LlamaCppEngine.kt` and `LlamaCppModelHelper.kt` stream only text. `LlmChatViewModel.kt` already collects WAV audio clips, but the GGUF adapter did not forward them.
+- Commit `afeee5c` explicitly rejects unsupported GGUF image/audio instead of silently ignoring it. This is an interim correctness fix, **not** multimodal enablement.
+- Original LiteRT-LM `0.10.0` remains untouched. The debug app ID remains distinct from stock Box.
+
+**Observed local Termux evidence (from the earlier device session, not a GitHub CI test)**
+
+- On the Android handset, `LFM3-Omni-2B-Q8_0.gguf` plus matching `mmproj-LFM3-Omni-2B-Q8_0.gguf` under `/storage/emulated/0/models/` successfully processed Greek speech and returned synthesized WAV via the local llama-server `/tts` endpoint, reported as 24 kHz.
+- Earlier realtime WebUI testing still had interrupted speech and unsuitable answers. Greek recognition, Greek answer quality, Greek synthesis and 10+ turn conversational stability must each be tested independently after porting; successful standalone endpoints are not proof of successful app integration.
+
+**Next engineering sequence — do not skip gates**
+
+1. **Native text bridge (5–8 engineering hours):** pin upstream llama.cpp v0.8.0 in the Box submodule, replace `common_*` helpers with public `llama_tokenize` / `llama_token_to_piece` and public batch lifecycle; keep context and history consistent; compile/link with one ABI and no unresolved symbols. Refactor JNI owner/cancel/unload safely.
+2. **Text functional validation (4–7 h):** load Q8 on ARM64 device, multi-turn Greek text, EOS/EOG, 4096 context, bounded memory, cancellation/reset/unload. Keep this independent from audio so native correctness can be localized.
+3. **Multimodal bridge (10–18 h):** include `libmtmd`; load the matching mmproj; decode user microphone audio with the sample rate obtained from `mtmd_get_audio_sample_rate`; use the upstream audio-generation helper interfaces and emit correctly typed samples from the reported output format/sample rate, not text tokens disguised as audio.
+4. **Voice UX (8–16 h):** wire `AudioRecord` capture / resampling / stop to GGUF inference and `AudioTrack` playback; preserve conversation history and handle barge-in/cancellation. Reuse the existing Box chat UI and capability gating rather than creating a second unrelated app.
+5. **Regression and APK (6–10 h):** GitHub CI, artifact, LiteRT-LM text and NPU-library packaging regression, plus on-device tests. NPU runtime acceleration is a separate, unproven claim.
+
+**Hard acceptance criteria:** no silent discarded audio, correct matched mmproj, no duplicate model turns or invalid native handles, comprehensible Greek input and answer, audible Greek model output, 10+ continuous turns, stop/unload without crash, original LiteRT-LM still works, and downloadable reproducible APK. The already-approved total budget remains **39–69 engineering hours** (gates 0–6, not counting separately scoped NPU hardware work or optional GPU).
