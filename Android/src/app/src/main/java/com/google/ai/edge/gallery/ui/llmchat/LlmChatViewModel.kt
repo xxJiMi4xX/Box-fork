@@ -49,6 +49,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -67,6 +68,8 @@ open class LlmChatViewModelBase() : ChatViewModel() {
   private val conversationMutex = Mutex()
   private val voicePlayback = OmniVoicePlayback()
   private var voicePlaybackJob: Job? = null
+  private var activeResponseJob: Job? = null
+  private val requestEpoch = AtomicLong(0L)
 
 
   private val _currentSystemPrompt = MutableStateFlow("")
@@ -230,9 +233,11 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     allowThinking: Boolean = false,
   ) {
     val accelerator = model.getStringConfigValue(key = ConfigKeys.ACCELERATOR, defaultValue = "")
+    val epoch = requestEpoch.incrementAndGet()
+    activeResponseJob?.cancel()
     voicePlaybackJob?.cancel()
     voicePlayback.stop()
-    viewModelScope.launch(Dispatchers.Default) {
+    activeResponseJob = viewModelScope.launch(Dispatchers.Default) {
       setInProgress(true)
       setPreparing(true)
 
@@ -245,10 +250,22 @@ open class LlmChatViewModelBase() : ChatViewModel() {
       addMessage(model = model, message = ChatMessageLoading(accelerator = accelerator))
 
       // Wait for instance to be initialized.
-      while (model.instance == null) {
+      var attempts = 0
+      while (model.instance == null && attempts < 1800) {
         delay(100)
+        attempts++
       }
-      delay(500)
+      if (model.instance == null) {
+        setInProgress(false)
+        setPreparing(false)
+        if (getLastMessage(model = model)?.type == ChatMessageType.LOADING) {
+          removeLastMessage(model = model)
+        }
+        if (requestEpoch.get() == epoch) onError("Το μοντέλο δεν αρχικοποιήθηκε")
+        return@launch
+      }
+      delay(100)
+      if (requestEpoch.get() != epoch) return@launch
 
       // Run inference.
       val audioClips: MutableList<ByteArray> = mutableListOf()
@@ -270,6 +287,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
         if (voiceEngine != null) {
           require(audioClips.size == 1) { "Record one voice clip per turn" }
           val transcript = voiceEngine.transcribeWav(audioClips.single())
+          if (requestEpoch.get() != epoch) return@launch
           if (getLastMessage(model = model)?.type == ChatMessageType.LOADING) {
             removeLastMessage(model = model)
           }
@@ -286,7 +304,9 @@ open class LlmChatViewModelBase() : ChatViewModel() {
 
         val resultListener: (String, Boolean, String?) -> Unit =
           { partialResult, done, partialThinkingResult ->
-            if (partialResult.startsWith("<ctrl")) {
+            if (requestEpoch.get() != epoch) {
+              // A newer voice turn superseded this one.
+            } else if (partialResult.startsWith("<ctrl")) {
               // Do nothing. Ignore control tokens.
             } else {
               // Remove the last message if it is a "loading" message.
@@ -411,6 +431,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                       val wav = voiceEngine.synthesizeSpeech(spokenAnswer)
                       val audio = WavPcm16.read(wav)
                       withContext(Dispatchers.Main) {
+                        if (requestEpoch.get() != epoch) return@withContext
                         addMessage(
                           model = model,
                           message = ChatMessageAudioClip(
@@ -429,10 +450,12 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                     } catch (e: Exception) {
                       Log.e(TAG, "Greek speech synthesis/playback failed", e)
                       withContext(Dispatchers.Main) {
-                        setPreparing(false)
-                        setInProgress(false)
-                        onDone()
-                        onError(e.message ?: "Greek speech could not be generated")
+                        if (requestEpoch.get() == epoch) {
+                          setPreparing(false)
+                          setInProgress(false)
+                          onDone()
+                          onError(e.message ?: "Greek speech could not be generated")
+                        }
                       }
                     }
                   }
@@ -445,15 +468,19 @@ open class LlmChatViewModelBase() : ChatViewModel() {
           }
 
         val cleanUpListener: () -> Unit = {
-          setInProgress(false)
-          setPreparing(false)
+          if (requestEpoch.get() == epoch) {
+            setInProgress(false)
+            setPreparing(false)
+          }
         }
 
         val errorListener: (String) -> Unit = { message ->
-          Log.e(TAG, "Error occurred while running inference")
-          setInProgress(false)
-          setPreparing(false)
-          onError(message)
+          if (requestEpoch.get() == epoch) {
+            Log.e(TAG, "Error occurred while running inference: $message")
+            setInProgress(false)
+            setPreparing(false)
+            onError(message)
+          }
         }
 
         val enableThinking =
@@ -461,6 +488,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
             model.getBooleanConfigValue(key = ConfigKeys.ENABLE_THINKING, defaultValue = false)
         val extraContext = if (enableThinking) mapOf("enable_thinking" to "true") else null
 
+        if (requestEpoch.get() != epoch) return@launch
         model.runtimeHelper.runInference(
           model = model,
           input = effectiveInput,
@@ -472,19 +500,30 @@ open class LlmChatViewModelBase() : ChatViewModel() {
           coroutineScope = viewModelScope,
           extraContext = extraContext,
         )
-      } catch (e: Exception) {
-        Log.e(TAG, "Error occurred while running inference", e)
-        if (getLastMessage(model = model)?.type == ChatMessageType.LOADING) {
-          removeLastMessage(model = model)
+      } catch (e: CancellationException) {
+        // Interrupted voice turn; the new request owns the visible UI.
+        if (requestEpoch.get() == epoch) {
+          setInProgress(false)
+          setPreparing(false)
         }
-        setInProgress(false)
-        setPreparing(false)
-        onError(e.message ?: "")
+        throw e
+      } catch (e: Exception) {
+        if (requestEpoch.get() == epoch) {
+          Log.e(TAG, "Error occurred while running inference", e)
+          if (getLastMessage(model = model)?.type == ChatMessageType.LOADING) {
+            removeLastMessage(model = model)
+          }
+          setInProgress(false)
+          setPreparing(false)
+          onError(e.message ?: "")
+        }
       }
     }
   }
 
   fun stopResponse(model: Model) {
+    requestEpoch.incrementAndGet()
+    activeResponseJob?.cancel()
     voicePlaybackJob?.cancel()
     voicePlayback.stop()
     Log.d(TAG, "Stopping response for model ${model.name}...")
