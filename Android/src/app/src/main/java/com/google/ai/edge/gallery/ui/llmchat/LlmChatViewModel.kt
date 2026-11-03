@@ -21,6 +21,9 @@ import android.graphics.Bitmap
 import android.util.Log
 import androidx.lifecycle.viewModelScope
 import com.google.ai.edge.gallery.data.ConfigKeys
+import com.google.ai.edge.gallery.engine.LlamaCppEngine
+import com.google.ai.edge.gallery.engine.OmniVoicePlayback
+import com.google.ai.edge.gallery.engine.WavPcm16
 import com.google.ai.edge.gallery.data.Model
 import com.google.ai.edge.gallery.data.Task
 import com.google.ai.edge.gallery.data.local.ChatRepository
@@ -44,6 +47,9 @@ import com.google.ai.edge.litertlm.ExperimentalApi
 import com.google.ai.edge.litertlm.ToolProvider
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -59,6 +65,9 @@ open class LlmChatViewModelBase() : ChatViewModel() {
   override lateinit var chatRepository: ChatRepository
   private var currentConversationId: String? = null
   private val conversationMutex = Mutex()
+  private val voicePlayback = OmniVoicePlayback()
+  private var voicePlaybackJob: Job? = null
+
 
   private val _currentSystemPrompt = MutableStateFlow("")
   val currentSystemPrompt: StateFlow<String> = _currentSystemPrompt.asStateFlow()
@@ -221,6 +230,8 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     allowThinking: Boolean = false,
   ) {
     val accelerator = model.getStringConfigValue(key = ConfigKeys.ACCELERATOR, defaultValue = "")
+    voicePlaybackJob?.cancel()
+    voicePlayback.stop()
     viewModelScope.launch(Dispatchers.Default) {
       setInProgress(true)
       setPreparing(true)
@@ -249,6 +260,30 @@ open class LlmChatViewModelBase() : ChatViewModel() {
       val start = System.currentTimeMillis()
 
       try {
+        // A GGUF voice turn uses the model's own LFM3 audio encoder for ASR,
+        // then the normal chat generation path for context-preserving reasoning.
+        // For LiteRT models, retain the existing audioClips route unchanged.
+        val voiceEngine = (model.instance as? LlamaCppEngine)
+            ?.takeIf { audioClips.isNotEmpty() }
+        var effectiveInput = input
+        var voiceRequested = false
+        if (voiceEngine != null) {
+          require(audioClips.size == 1) { "Record one voice clip per turn" }
+          val transcript = voiceEngine.transcribeWav(audioClips.single())
+          if (getLastMessage(model = model)?.type == ChatMessageType.LOADING) {
+            removeLastMessage(model = model)
+          }
+          addMessage(
+            model = model,
+            message = ChatMessageText(content = transcript, side = ChatSide.USER)
+          )
+          persistUserMessage(model, transcript)
+          addMessage(model = model, message = ChatMessageLoading(accelerator = accelerator))
+          effectiveInput = listOf(input, transcript).filter { it.isNotBlank() }.joinToString("\n")
+          audioClips.clear()
+          voiceRequested = true
+        }
+
         val resultListener: (String, Boolean, String?) -> Unit =
           { partialResult, done, partialThinkingResult ->
             if (partialResult.startsWith("<ctrl")) {
@@ -360,13 +395,50 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                     )
                   }
                 }
-                setInProgress(false)
-                onDone()
-
-                // Box: Persist assistant response to encrypted DB
+                // Box: Persist assistant response to encrypted DB.
                 val assistantMsg = getLastMessageWithTypeAndSide(model, ChatMessageType.TEXT, ChatSide.AGENT)
                 if (assistantMsg is ChatMessageText && assistantMsg.content.isNotEmpty()) {
                   persistAssistantMessage(model, assistantMsg.content, assistantMsg.latencyMs.toLong())
+                }
+
+                if (voiceRequested && voiceEngine != null &&
+                    assistantMsg is ChatMessageText && assistantMsg.content.isNotBlank()) {
+                  val spokenAnswer = assistantMsg.content
+                  setPreparing(true)
+                  voicePlaybackJob?.cancel()
+                  voicePlaybackJob = viewModelScope.launch(Dispatchers.IO) {
+                    try {
+                      val wav = voiceEngine.synthesizeSpeech(spokenAnswer)
+                      val audio = WavPcm16.read(wav)
+                      withContext(Dispatchers.Main) {
+                        addMessage(
+                          model = model,
+                          message = ChatMessageAudioClip(
+                            audioData = audio.pcm16,
+                            sampleRate = audio.sampleRate,
+                            side = ChatSide.AGENT,
+                          ),
+                        )
+                        setPreparing(false)
+                        setInProgress(false)
+                        onDone()
+                      }
+                      voicePlayback.play(audio)
+                    } catch (e: CancellationException) {
+                      throw e
+                    } catch (e: Exception) {
+                      Log.e(TAG, "Greek speech synthesis/playback failed", e)
+                      withContext(Dispatchers.Main) {
+                        setPreparing(false)
+                        setInProgress(false)
+                        onDone()
+                        onError(e.message ?: "Greek speech could not be generated")
+                      }
+                    }
+                  }
+                } else {
+                  setInProgress(false)
+                  onDone()
                 }
               }
             }
@@ -391,7 +463,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
 
         model.runtimeHelper.runInference(
           model = model,
-          input = input,
+          input = effectiveInput,
           images = images,
           audioClips = audioClips,
           resultListener = resultListener,
@@ -410,6 +482,8 @@ open class LlmChatViewModelBase() : ChatViewModel() {
   }
 
   fun stopResponse(model: Model) {
+    voicePlaybackJob?.cancel()
+    voicePlayback.stop()
     Log.d(TAG, "Stopping response for model ${model.name}...")
     if (getLastMessage(model = model) is ChatMessageLoading) {
       removeLastMessage(model = model)
