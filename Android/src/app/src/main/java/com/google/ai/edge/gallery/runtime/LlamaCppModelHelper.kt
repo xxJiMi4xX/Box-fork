@@ -153,9 +153,10 @@ object LlamaCppModelHelper : LlmModelHelper {
             return
         }
 
-        // Stage 1 uses a text-only llama.cpp bridge. Multimodal mtmd input is added after native validation.
-        if (images.isNotEmpty() || audioClips.isNotEmpty()) {
-            onError("This GGUF backend does not yet accept image or audio input.")
+        // Audio input is staged at JNI level but remains hidden from the UI
+        // until an integrated on-device validation pass confirms end-to-end use.
+        if (images.isNotEmpty() || audioClips.size > 1) {
+            onError("GGUF currently accepts at most one audio clip, and no images.")
             return
         }
 
@@ -164,6 +165,7 @@ object LlamaCppModelHelper : LlmModelHelper {
             query = input,
             conversationHistory = snapshot?.history,
             systemPrompt = snapshot?.systemPrompt,
+            audioWav = audioClips.singleOrNull(),
             onToken = { partialResponse ->
                 resultListener(partialResponse, false, null)
             },

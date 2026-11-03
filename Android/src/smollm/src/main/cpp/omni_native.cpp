@@ -349,12 +349,23 @@ public:
         messages_.emplace_back(role, text);
     }
 
-    void start(const std::string & query) {
+    void start(const std::string & query, const std::vector<uint8_t> & audioWav = {}) {
         std::lock_guard<std::mutex> guard(mutex_);
         if (generationActive_) throw std::runtime_error("Generation is already active");
         cancelled_.store(false, std::memory_order_release);
         if (!storeChats_) messages_.clear();
-        messages_.emplace_back("user", query);
+        // The media marker is embedded only in the rendered prompt. Do not
+        // persist the marker as conversation text between successive turns.
+        const bool hasAudio = !audioWav.empty();
+        if (hasAudio && (!projector_ || !mtmd_support_audio(projector_.get()))) {
+            throw std::runtime_error("The loaded GGUF projector does not accept audio input");
+        }
+        if (hasAudio && audioWav.size() > 16 * 1024 * 1024) {
+            throw std::invalid_argument("Audio clip exceeds the 16 MiB input limit");
+        }
+        messages_.emplace_back("user", hasAudio
+            ? query + (query.empty() ? "" : "\n") + mtmd_default_marker()
+            : query);
         generationActive_ = true;
         turnStored_ = false;
         try {
@@ -385,6 +396,41 @@ public:
             }
             if (len <= 0 || static_cast<size_t>(len) >= formatted.size()) {
                 throw std::runtime_error("Failed to render model chat template");
+            }
+
+            if (hasAudio) {
+                const auto options = mtmd_helper_init_opt_default();
+                const auto loaded = mtmd_helper_bitmap_init_from_buf(
+                    projector_.get(), audioWav.data(), audioWav.size(), false, options);
+                mtmd::bitmap_ptr bitmap(loaded.bitmap);
+                if (!bitmap || !mtmd_bitmap_is_audio(bitmap.get())) {
+                    throw std::runtime_error("Unable to decode the audio clip with mtmd");
+                }
+                mtmd::input_chunks chunks(mtmd_input_chunks_init());
+                if (!chunks.ptr) throw std::runtime_error("Cannot allocate multimodal input chunks");
+                const mtmd_input_text input = {
+                    formatted.data(), static_cast<size_t>(len), true, true
+                };
+                const mtmd_bitmap * medias[] = { bitmap.get() };
+                const int32_t rc = mtmd_tokenize(
+                    projector_.get(), chunks.ptr.get(), &input, medias, 1);
+                if (rc != 0) throw std::runtime_error("Multimodal audio tokenization failed");
+                const llama_pos required = mtmd_helper_get_n_pos(chunks.ptr.get());
+                if (required <= 0 || required >= static_cast<llama_pos>(llama_n_ctx(context_.get()))) {
+                    throw std::runtime_error("Audio input exceeds the context capacity");
+                }
+                llama_memory_clear(llama_get_memory(context_.get()), false);
+                llama_sampler_reset(sampler_.get());
+                llama_pos nPast = 0;
+                if (mtmd_helper_eval_chunks(projector_.get(), context_.get(), chunks.ptr.get(),
+                                            0, 0, kBatchSize, true, &nPast) != 0) {
+                    throw std::runtime_error("Multimodal audio decoding failed");
+                }
+                // Do not keep the audio-marker placeholder in textual history.
+                messages_.back().second = query.empty() ? "[Audio message]" : query;
+                decodedPosition_ = nPast;
+                hasLogits_ = true;
+                return;
             }
 
             const auto * vocab = llama_model_get_vocab(model_.get());
@@ -642,6 +688,24 @@ Java_com_jegly_offlineLLM_smollm_SmolLM_startCompletion(
     invokeVoid(env, [&] {
         JavaString text(env, prompt);
         lookup(handle)->start(text.c_str());
+    });
+}
+
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_jegly_offlineLLM_smollm_SmolLM_startCompletionAudio(
+    JNIEnv * env, jobject, jlong handle, jstring prompt, jbyteArray audio) {
+    invokeVoid(env, [&] {
+        JavaString text(env, prompt);
+        if (!audio) throw std::invalid_argument("Missing audio input");
+        const jsize n = env->GetArrayLength(audio);
+        if (n <= 0 || n > 16 * 1024 * 1024) {
+            throw std::invalid_argument("Invalid audio clip length");
+        }
+        std::vector<uint8_t> bytes(static_cast<size_t>(n));
+        env->GetByteArrayRegion(audio, 0, n, reinterpret_cast<jbyte *>(bytes.data()));
+        if (env->ExceptionCheck()) return;
+        lookup(handle)->start(text.c_str(), bytes);
     });
 }
 

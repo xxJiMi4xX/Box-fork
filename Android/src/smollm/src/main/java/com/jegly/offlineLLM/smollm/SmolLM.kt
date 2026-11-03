@@ -136,10 +136,11 @@ class SmolLM {
         return getContextSizeUsed(nativePtr)
     }
 
-    fun getResponseAsFlow(query: String): Flow<String> = flow {
+    fun getResponseAsFlow(query: String, audioWav: ByteArray? = null): Flow<String> = flow {
         val handle = nativePtr
         check(handle != 0L) { "Model is not loaded." }
-        startCompletion(handle, query)
+        if (audioWav == null) startCompletion(handle, query)
+        else startCompletionAudio(handle, query, audioWav)
         try {
             while (kotlinx.coroutines.currentCoroutineContext().isActive) {
                 val piece = completionLoop(handle)
@@ -208,6 +209,7 @@ class SmolLM {
     private external fun getContextSizeUsed(modelPtr: Long): Int
     private external fun close(modelPtr: Long)
     private external fun startCompletion(modelPtr: Long, prompt: String)
+    private external fun startCompletionAudio(modelPtr: Long, prompt: String, audioWav: ByteArray)
     private external fun completionLoop(modelPtr: Long): String
     private external fun stopCompletion(modelPtr: Long)
     private external fun requestAbort(modelPtr: Long)

@@ -144,6 +144,7 @@ class LlamaCppEngine {
         query: String,
         conversationHistory: List<Pair<String, String>>? = null,
         systemPrompt: String? = null,
+        audioWav: ByteArray? = null,
         onToken: (String) -> Unit,
         onComplete: (GenerationResult) -> Unit,
         onCancelled: () -> Unit,
@@ -188,7 +189,7 @@ class LlamaCppEngine {
                     var shouldStop = false
 
                     val duration = measureTime {
-                        instance.getResponseAsFlow(query)
+                        instance.getResponseAsFlow(query, audioWav)
                             .takeWhile { !shouldStop }
                             .collect { piece ->
                                 fullResponse += piece
