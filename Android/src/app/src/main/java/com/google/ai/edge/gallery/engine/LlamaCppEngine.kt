@@ -264,6 +264,53 @@ class LlamaCppEngine {
         }
     }
 
+    /**
+     * Stream native LFM3 text and speech from one GGUF context.
+     * The callback may suspend to apply bounded audio backpressure.
+     * The caller owns cancellation and closes the playback channel.
+     */
+    suspend fun streamMixedResponse(
+        query: String,
+        onChunk: suspend (SmolLM.MixedVoiceStep) -> Unit,
+    ): GenerationResult {
+        check(isModelLoaded.get() && supportsGreekVoice) {
+            "Mixed LFM3 speech requires a loaded voice-capable GGUF"
+        }
+        stopGeneration()
+        val epoch = generationEpoch.incrementAndGet()
+        return withContext(Dispatchers.IO) {
+            nativeMutex.withLock {
+                check(isModelLoaded.get() && generationEpoch.get() == epoch) {
+                    "Mixed generation superseded or model unloaded"
+                }
+                currentCoroutineContext().ensureActive()
+                isGenerating = true
+                val model = instance
+                val full = StringBuilder()
+                try {
+                    val duration = measureTime {
+                        model.getMixedResponseAsFlow(query).collect { part ->
+                            currentCoroutineContext().ensureActive()
+                            check(generationEpoch.get() == epoch) {
+                                "Mixed generation superseded"
+                            }
+                            full.append(part.text)
+                            onChunk(part)
+                        }
+                    }
+                    GenerationResult(
+                        response = full.toString(),
+                        tokensPerSecond = model.getResponseGenerationSpeed(),
+                        durationSeconds = duration.inWholeSeconds.toInt(),
+                        contextLengthUsed = model.getContextLengthUsed(),
+                    )
+                } finally {
+                    if (generationEpoch.get() == epoch) isGenerating = false
+                }
+            }
+        }
+    }
+
     fun generateResponse(
         query: String,
         onToken: (String) -> Unit,
