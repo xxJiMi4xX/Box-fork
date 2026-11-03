@@ -1,8 +1,8 @@
-name: Box Android integration validation
+name: Box Omni Voice debug APK validation
 
 on:
   push:
-    branches: [feature/lfm3-omni-android]
+    branches: [feature/lfm3-omni-android, feature/lfm3-omni-audio-stage]
     paths:
       - "Android/**"
       - ".gitmodules"
@@ -77,6 +77,16 @@ jobs:
           chmod +x ./gradlew
           ./gradlew :app:assembleDebug --no-daemon --stacktrace --console=plain --max-workers=2
 
+      - name: Run focused voice/audio unit tests
+        working-directory: Android/src
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:testDebugUnitTest \
+            --tests "com.google.ai.edge.gallery.ui.llmchat.VoiceTextSegmentsTest" \
+            --tests "com.google.ai.edge.gallery.engine.WavPcm16Test" \
+            --no-daemon --stacktrace --console=plain --max-workers=2
+
       - name: Verify MediaTek LiteRT NPU libraries are packaged in APK
         shell: bash
         run: |
@@ -88,12 +98,17 @@ jobs:
           unzip -Z1 "$apk" | grep -Fx "lib/arm64-v8a/libLiteRtDispatch_MediaTek.so"
           unzip -Z1 "$apk" | grep -Fx "lib/arm64-v8a/libLiteRtCompilerPlugin_MediaTek.so"
           echo "MediaTek NPU dispatch/compiler libraries confirmed in $apk"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt2" dump badging "$apk" \
+            | grep -F "name='com.box.gallery.omni.voice.dev'"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt2" dump badging "$apk" \
+            | grep -F "application-label:'Box Voice'"
+          sha256sum "$apk"
 
       - name: Upload debug APK if build succeeds
         uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: box-omni-baseline-arm64-debug
+          name: box-omni-voice-arm64-debug
           path: Android/src/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14

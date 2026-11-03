@@ -53,8 +53,8 @@ extensions.configure<com.android.build.api.dsl.ApplicationExtension>("android") 
 
   buildTypes {
     debug {
-      applicationIdSuffix = ".omni.dev"
-      versionNameSuffix = "-omni-dev"
+      applicationIdSuffix = ".omni.voice.dev"
+      versionNameSuffix = "-omni-voice-dev"
     }
     release {
       isMinifyEnabled = false
