@@ -11,7 +11,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
@@ -243,25 +242,12 @@ class LlamaCppEngine {
                     currentCoroutineContext().ensureActive()
                     isGenerating = true
                     val model = instance
-                    val stopSequences = listOf(
-                        "<|im_end|>", "<|eot_id|>", "<|endoftext|>", "<|im_start|>")
                     val full = StringBuilder()
                     var emittedLength = 0
-                    var stopped = false
                     val duration = measureTime {
-                        model.getResponseAsFlow(query).takeWhile { !stopped }
-                            .collect { piece ->
+                        model.getResponseAsFlow(query).collect { piece ->
                             currentCoroutineContext().ensureActive()
-                            if (stopped) return@collect
                             full.append(piece)
-                            val raw = full.toString()
-                            val stopPosition = stopSequences
-                                .mapNotNull { seq -> raw.indexOf(seq).takeIf { it >= 0 } }
-                                .minOrNull()
-                            if (stopPosition != null) {
-                                full.setLength(stopPosition)
-                                stopped = true
-                            }
                             val visible = cleanModelOutput(full.toString(), false)
                             if (visible.length > emittedLength) {
                                 val delta = visible.substring(emittedLength)

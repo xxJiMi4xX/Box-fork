@@ -312,6 +312,14 @@ std::optional<std::string> LLMInference::completionLoop() {
         return std::nullopt;
     }
     std::string piece = tokenToPiece(token);
+    // Some GGUF vocabularies do not tag each chat turn delimiter as EOG.
+    // Complete this native turn here rather than making Kotlin stop its Flow,
+    // which would roll back a valid assistant message in stopCompletion().
+    if (piece == "<|im_end|>" || piece == "<|eot_id|>" ||
+        piece == "<|endoftext|>" || piece == "<|im_start|>") {
+        finishGeneration(true);
+        return std::nullopt;
+    }
     llama_batch batch = llama_batch_get_one(&token, 1);
     if (llama_decode(context_, batch) != 0) {
         finishGeneration(false);
