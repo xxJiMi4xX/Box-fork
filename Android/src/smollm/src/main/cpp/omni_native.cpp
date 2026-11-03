@@ -2,6 +2,7 @@
 #include <android/log.h>
 #include "llama.h"
 #include "mtmd.h"
+#include "mtmd-helper.h"
 
 #include <algorithm>
 #include <array>
@@ -199,6 +200,125 @@ public:
         };
         projector_ = std::move(candidate);
         return capabilities;
+    }
+
+
+    // Native LFM3-Audio TTS; bounded WAV output and no network dependency.
+    // This is a separate transaction from the visible text conversation.
+    std::vector<uint8_t> synthesizeSpeech(
+            const std::string & text, const std::string & language,
+            const std::string & voice, int maxFrames) {
+        std::lock_guard<std::mutex> guard(mutex_);
+        if (!model_ || !context_ || !projector_) {
+            throw std::runtime_error("GGUF and matching mmproj must be loaded");
+        }
+        if (generationActive_) throw std::runtime_error("Cannot synthesize speech during generation");
+        if (text.empty() || text.size() > 4096) {
+            throw std::invalid_argument("TTS text must have 1..4096 UTF-8 bytes");
+        }
+        if (maxFrames < 1 || maxFrames > 1024) {
+            throw std::invalid_argument("TTS frame limit must be 1..1024");
+        }
+
+        const auto info = mtmd_gen_audio_get_info(projector_.get());
+        if (info.type != MTMD_GEN_AUDIO_TYPE_LFM3A || info.sample_rate <= 0) {
+            throw std::runtime_error("Native LFM3-Audio output is not supported by this projector");
+        }
+
+        const std::string lang = language.empty() ? "Greek" : language;
+        const std::string gender = voice.empty() ? "female" : voice;
+        if (gender != "female" && gender != "male") {
+            throw std::invalid_argument("Voice must be female or male");
+        }
+        if (lang.size() > 60) throw std::invalid_argument("Language identifier too long");
+        const std::string sys = "Perform TTS in " + lang + " using a " + gender + " voice.";
+        const llama_chat_message messages[2] = {
+            {"system", sys.c_str()}, {"user", text.c_str()},
+        };
+        const char * tmpl = llama_model_chat_template(model_.get(), nullptr);
+        if (!tmpl) throw std::runtime_error("TTS model has no chat template");
+        std::vector<char> buffer(std::max<size_t>(2048, 2 * (sys.size()+text.size()+128)));
+        int32_t n = llama_chat_apply_template(tmpl, messages, 2, true, buffer.data(),
+                                              static_cast<int32_t>(buffer.size()));
+        if (n < 0) throw std::runtime_error("Unsupported LFM3 TTS template");
+        if (static_cast<size_t>(n) >= buffer.size()) {
+            buffer.resize(static_cast<size_t>(n)+1);
+            n = llama_chat_apply_template(tmpl, messages, 2, true, buffer.data(),
+                                          static_cast<int32_t>(buffer.size()));
+        }
+        if (n <= 0 || static_cast<size_t>(n) >= buffer.size()) {
+            throw std::runtime_error("Cannot render LFM3 TTS chat prompt");
+        }
+        std::string prompt(buffer.data(), static_cast<size_t>(n));
+        const std::string audioToken = "<|audio_start|>";
+        if (prompt.size() < audioToken.size() ||
+                prompt.compare(prompt.size()-audioToken.size(), audioToken.size(), audioToken) != 0) {
+            prompt += audioToken;
+        }
+
+        cancelled_.store(false, std::memory_order_release);
+        generationActive_ = true;
+        try {
+            llama_memory_clear(llama_get_memory(context_.get()), false);
+            llama_sampler_reset(sampler_.get());
+            llama_set_embeddings(context_.get(), true);
+            mtmd_helper::gen_audio audio;
+            audio.init(context_.get(), projector_.get());
+            if (!audio.valid()) throw std::runtime_error("LFM3 audio decoder initialization failed");
+
+            mtmd_helper::gen_audio::inp input;
+            input.set_prompt(std::move(prompt));
+            input.set_lang(lang);
+            input.set_voice(gender);
+            input.data.seq_id = 0;
+            input.data.stream = false;
+            input.data.out_type = MTMD_HELPER_GEN_AUDIO_OUTTYPE_WAV;
+            if (audio.set_input(input.get()) != 0) throw std::runtime_error("Invalid LFM3 TTS prompt");
+
+            int32_t remaining;
+            do {
+                if (cancelled_.load(std::memory_order_acquire)) throw std::runtime_error("Speech synthesis cancelled");
+                remaining = audio.step_prompt(std::min<int32_t>(kBatchSize, llama_n_batch(context_.get())));
+                if (remaining < 0) throw std::runtime_error("TTS prompt decoding failed");
+            } while (remaining > 0);
+
+            const int32_t nEmbd = llama_model_n_embd(model_.get());
+            const float * initial = llama_get_embeddings_ith(context_.get(), -1);
+            if (!initial || nEmbd <= 0) throw std::runtime_error("TTS prompt embedding unavailable");
+            std::vector<float> state(initial, initial + nEmbd);
+            llama_token sampled = llama_sampler_sample(sampler_.get(), context_.get(), -1);
+            llama_sampler_accept(sampler_.get(), sampled);
+
+            for (int frame = 0; frame < maxFrames; ++frame) {
+                if (cancelled_.load(std::memory_order_acquire)) throw std::runtime_error("Speech synthesis cancelled");
+                const float * newState = nullptr;
+                bool stop = false;
+                if (audio.step_gen(sampled, state.data(), &newState, &stop) != 0) {
+                    throw std::runtime_error("TTS frame generation failed");
+                }
+                if (newState == nullptr || stop) break;
+                state.assign(newState, newState + nEmbd);
+                sampled = llama_sampler_sample(sampler_.get(), context_.get(), -1);
+                llama_sampler_accept(sampler_.get(), sampled);
+            }
+
+            int32_t rate = 0;
+            const char * wav = nullptr;
+            size_t nbytes = 0;
+            if (audio.flush() != 0 || audio.get_output(&rate, &wav, &nbytes) != 0 ||
+                !wav || nbytes < 44 || nbytes > 16 * 1024 * 1024 || rate != info.sample_rate) {
+                throw std::runtime_error("LFM3 did not produce a bounded WAV buffer");
+            }
+            const uint8_t * p = reinterpret_cast<const uint8_t *>(wav);
+            std::vector<uint8_t> result(p, p + nbytes);
+            llama_set_embeddings(context_.get(), false);
+            generationActive_ = false;
+            return result;
+        } catch (...) {
+            llama_set_embeddings(context_.get(), false);
+            generationActive_ = false;
+            throw;
+        }
     }
 
     void resetSession() {
@@ -477,6 +597,26 @@ Java_com_jegly_offlineLLM_smollm_SmolLM_loadProjectorNative(
         if (!output) throw std::runtime_error("Failed to allocate projector capability array");
         env->SetIntArrayRegion(output, 0, static_cast<jsize>(capabilities.size()),
                                reinterpret_cast<const jint *>(capabilities.data()));
+    });
+    return output;
+}
+
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_jegly_offlineLLM_smollm_SmolLM_synthesizeSpeechNative(
+        JNIEnv * env, jobject, jlong handle, jstring prompt, jstring language,
+        jstring voice, jint maxFrames) {
+    jbyteArray output = nullptr;
+    invokeVoid(env, [&] {
+        JavaString text(env, prompt);
+        JavaString lang(env, language);
+        JavaString gender(env, voice);
+        const auto wav = lookup(handle)->synthesizeSpeech(
+            text.c_str(), lang.c_str(), gender.c_str(), maxFrames);
+        output = env->NewByteArray(static_cast<jsize>(wav.size()));
+        if (!output) throw std::runtime_error("Cannot allocate TTS WAV result");
+        env->SetByteArrayRegion(output, 0, static_cast<jsize>(wav.size()),
+                               reinterpret_cast<const jbyte *>(wav.data()));
     });
     return output;
 }

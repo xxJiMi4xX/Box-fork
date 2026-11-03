@@ -96,6 +96,19 @@ class SmolLM {
         addChatMessage(nativePtr, message, role)
     }
 
+    /** Synchronous model-native TTS; run from a worker thread, never the UI. */
+    fun synthesizeSpeech(
+        text: String,
+        language: String = "Greek",
+        voice: String = "female",
+        maxFrames: Int = 512,
+    ): ByteArray {
+        require(text.isNotBlank()) { "TTS text cannot be blank" }
+        require(maxFrames in 1..1024) { "TTS maxFrames must be 1..1024" }
+        verifyHandle()
+        return synthesizeSpeechNative(nativePtr, text, language, voice, maxFrames)
+    }
+
     fun resetSession() {
         verifyHandle()
         resetSessionNative(nativePtr)
@@ -188,6 +201,9 @@ class SmolLM {
     private external fun loadProjectorNative(modelPtr: Long, mmprojPath: String): IntArray
     private external fun addChatMessage(modelPtr: Long, message: String, role: String)
     private external fun resetSessionNative(modelPtr: Long)
+    private external fun synthesizeSpeechNative(
+        modelPtr: Long, text: String, language: String, voice: String, maxFrames: Int,
+    ): ByteArray
     private external fun getResponseGenerationSpeed(modelPtr: Long): Float
     private external fun getContextSizeUsed(modelPtr: Long): Int
     private external fun close(modelPtr: Long)

@@ -268,6 +268,20 @@ class LlamaCppEngine {
         return if (isFinal) cleaned.trim() else cleaned
     }
 
+    /** Non-streaming native LFM3 TTS. Device validation and voice UI remain pending. */
+    suspend fun synthesizeSpeech(
+        text: String,
+        language: String = "Greek",
+        voice: String = "female",
+        maxFrames: Int = 512,
+    ): ByteArray = withContext(Dispatchers.Default) {
+        stateLock.withLock {
+            check(isModelLoaded.get()) { "Model is not loaded" }
+            check(!isGenerating) { "Stop text generation before TTS" }
+            instance.synthesizeSpeech(text, language, voice, maxFrames)
+        }
+    }
+
     fun stopGeneration() {
         stateLock.withLock {
             instance.interruptGeneration()
