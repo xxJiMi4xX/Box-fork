@@ -341,6 +341,8 @@ public:
             return "[EOG]";
         }
         if (token == LLAMA_TOKEN_NULL) throw std::runtime_error("Sampler returned invalid token");
+        // Update sampler history so repeat penalties apply to generated tokens.
+        llama_sampler_accept(sampler_.get(), token);
         pendingToken_ = token;
         hasPendingToken_ = true;
         ++generated_;

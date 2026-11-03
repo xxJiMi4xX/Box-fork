@@ -115,8 +115,8 @@ class LlamaCppEngine {
     }
 
     /**
-     * Clears native conversation state while keeping model weights and projector loaded.
-     * The JNI lock serializes reset against an in-flight decode.
+     * Clears only the native conversation state, retaining weights and projector.
+     * This runs synchronously on the caller's existing worker thread.
      */
     fun resetConversation(
         systemPrompt: String = lastSystemPrompt,
@@ -127,25 +127,23 @@ class LlamaCppEngine {
             generationJob?.cancel()
             instance.interruptGeneration()
             isGenerating = false
-            CoroutineScope(Dispatchers.Default).launch {
-                try {
-                    instance.resetSession()
-                    if (systemPrompt.isNotBlank()) {
-                        instance.addSystemPrompt(systemPrompt)
-                    }
-                    lastSystemPrompt = systemPrompt
-                    withContext(Dispatchers.Main) { onSuccess() }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    withContext(Dispatchers.Main) { onError(e) }
+            try {
+                instance.resetSession()
+                if (systemPrompt.isNotBlank()) {
+                    instance.addSystemPrompt(systemPrompt)
                 }
+                lastSystemPrompt = systemPrompt
+                onSuccess()
+            } catch (e: Exception) {
+                onError(e)
             }
         }
     }
 
     fun generateResponse(
         query: String,
+        conversationHistory: List<Pair<String, String>>? = null,
+        systemPrompt: String? = null,
         onToken: (String) -> Unit,
         onComplete: (GenerationResult) -> Unit,
         onCancelled: () -> Unit,
@@ -162,6 +160,20 @@ class LlamaCppEngine {
             generationJob = CoroutineScope(Dispatchers.Default).launch {
                 try {
                     isGenerating = true
+                    // Restore from the visible conversation, even if it was loaded
+                    // from disk while the GGUF model was initializing.
+                    if (conversationHistory != null) {
+                        instance.resetSession()
+                        val prompt = systemPrompt.orEmpty()
+                        if (prompt.isNotBlank()) instance.addSystemPrompt(prompt)
+                        for ((role, content) in conversationHistory) {
+                            if (content.isNotBlank() &&
+                                (role == "user" || role == "assistant")) {
+                                instance.addChatMessage(role, content)
+                            }
+                        }
+                        lastSystemPrompt = prompt
+                    }
                     var fullResponse = ""
                     var lastDisplayed = ""
 

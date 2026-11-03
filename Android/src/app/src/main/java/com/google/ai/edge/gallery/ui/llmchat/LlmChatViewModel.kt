@@ -22,12 +22,14 @@ import android.util.Log
 import androidx.lifecycle.viewModelScope
 import com.google.ai.edge.gallery.data.ConfigKeys
 import com.google.ai.edge.gallery.data.Model
+import com.google.ai.edge.gallery.data.RuntimeType
 import com.google.ai.edge.gallery.data.Task
 import com.google.ai.edge.gallery.data.local.ChatRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import com.google.ai.edge.gallery.runtime.runtimeHelper
+import com.google.ai.edge.gallery.runtime.LlamaCppModelHelper
 import com.google.ai.edge.gallery.security.SecurityUtils
 import com.google.ai.edge.gallery.ui.common.chat.ChatMessageAudioClip
 import com.google.ai.edge.gallery.ui.common.chat.ChatMessageError
@@ -388,6 +390,28 @@ open class LlmChatViewModelBase() : ChatViewModel() {
           allowThinking &&
             model.getBooleanConfigValue(key = ConfigKeys.ENABLE_THINKING, defaultValue = false)
         val extraContext = if (enableThinking) mapOf("enable_thinking" to "true") else null
+
+        if (model.runtimeType == RuntimeType.LLAMA_CPP) {
+          // The current user turn is already visible in ChatView; the native
+          // engine appends it itself. Keep only the earlier conversation.
+          val visibleHistory = uiState.value.messagesByModel[model.name].orEmpty()
+            .filterIsInstance<ChatMessageText>()
+            .filter { it.side == ChatSide.USER || it.side == ChatSide.AGENT }
+            .map { message ->
+              (if (message.side == ChatSide.USER) "user" else "assistant") to message.content
+            }
+          val previousTurns =
+            if (input.isNotBlank() && visibleHistory.lastOrNull() == ("user" to input)) {
+              visibleHistory.dropLast(1)
+            } else {
+              visibleHistory
+            }
+          LlamaCppModelHelper.setNextConversationSnapshot(
+            model = model,
+            history = previousTurns,
+            systemPrompt = _currentSystemPrompt.value,
+          )
+        }
 
         model.runtimeHelper.runInference(
           model = model,

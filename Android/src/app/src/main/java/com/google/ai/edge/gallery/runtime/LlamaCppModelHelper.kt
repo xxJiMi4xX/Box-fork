@@ -15,6 +15,7 @@ import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ToolProvider
 import com.jegly.offlineLLM.smollm.SmolLM
 import kotlinx.coroutines.CoroutineScope
+import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "BoxLlamaCppModelHelper"
 
@@ -26,6 +27,22 @@ object LlamaCppModelHelper : LlmModelHelper {
 
     // Indexed by model name
     private val engines: MutableMap<String, LlamaCppEngine> = mutableMapOf()
+
+    private data class ConversationSnapshot(
+        val history: List<Pair<String, String>>,
+        val systemPrompt: String,
+    )
+
+    private val pendingSnapshots = ConcurrentHashMap<String, ConversationSnapshot>()
+
+    /** Called by the chat ViewModel immediately before a GGUF response. */
+    fun setNextConversationSnapshot(
+        model: Model,
+        history: List<Pair<String, String>>,
+        systemPrompt: String,
+    ) {
+        pendingSnapshots[model.name] = ConversationSnapshot(history.toList(), systemPrompt)
+    }
 
     override fun initialize(
         context: Context,
@@ -87,6 +104,7 @@ object LlamaCppModelHelper : LlmModelHelper {
         tools: List<ToolProvider>,
         enableConversationConstrainedDecoding: Boolean,
     ) {
+        pendingSnapshots.remove(model.name)
         val engine = engines[model.name] ?: return
         Log.d(TAG, "Resetting conversation for ${model.name} (keeping model loaded)")
 
@@ -104,6 +122,7 @@ object LlamaCppModelHelper : LlmModelHelper {
     }
 
     override fun cleanUp(model: Model, onDone: () -> Unit) {
+        pendingSnapshots.remove(model.name)
         val engine = engines.remove(model.name)
         engine?.unloadModel()
         model.instance = null
@@ -139,8 +158,11 @@ object LlamaCppModelHelper : LlmModelHelper {
             return
         }
 
+        val snapshot = pendingSnapshots.remove(model.name)
         engine.generateResponse(
             query = input,
+            conversationHistory = snapshot?.history,
+            systemPrompt = snapshot?.systemPrompt,
             onToken = { partialResponse ->
                 resultListener(partialResponse, false, null)
             },
