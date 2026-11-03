@@ -92,6 +92,7 @@ fun OmniVoiceScreen(
         ?: models.firstOrNull()?.name
     var selectedName by remember { mutableStateOf<String?>(null) }
     var expanded by remember { mutableStateOf(false) }
+    var settingsExpanded by remember { mutableStateOf(false) }
     var importUri by remember { mutableStateOf<Uri?>(null) }
     var importInfo by remember { mutableStateOf<ImportedModel?>(null) }
     var importStage by remember { mutableStateOf(0) }
@@ -257,54 +258,61 @@ fun OmniVoiceScreen(
                     }
                 }
 
-                Text("Υπολογισμός GGUF", style = MaterialTheme.typography.titleMedium)
-                Text("Backend: CPU. Η GPU/Vulkan δεν είναι ενεργή σε αυτό το APK.")
-                Text("Νήματα CPU: $cpuThreads / $maxCpuThreads")
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedButton(
-                        enabled = cpuThreads > 1 && !unloading,
-                        onClick = {
-                            val value = cpuThreads - 1
-                            runCatching {
-                                VoiceGgufRuntimeSettings.setCpuThreads(
-                                    context, selected.getPath(context), value
-                                )
-                            }.onSuccess {
-                                cpuThreads = value
-                                runtimeError = null
-                            }.onFailure { runtimeError = it.message }
-                        },
-                    ) { Text("−") }
-                    OutlinedButton(
-                        enabled = cpuThreads < maxCpuThreads && !unloading,
-                        onClick = {
-                            val value = cpuThreads + 1
-                            runCatching {
-                                VoiceGgufRuntimeSettings.setCpuThreads(
-                                    context, selected.getPath(context), value
-                                )
-                            }.onSuccess {
-                                cpuThreads = value
-                                runtimeError = null
-                            }.onFailure { runtimeError = it.message }
-                        },
-                    ) { Text("+") }
-                }
-                val activeThreads = engine?.lastLoadParams?.numThreads
-                if (modelLoaded && activeThreads != null) {
-                    Text(
-                        if (activeThreads == cpuThreads) "Ενεργά CPU threads: $activeThreads"
-                        else "Ενεργά CPU threads: $activeThreads. Πάτησε Επαναφόρτωση για να χρησιμοποιηθούν $cpuThreads.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                } else {
-                    Text(
-                        "Η επιλογή εφαρμόζεται στην επόμενη φόρτωση. Τα threads δεν δεσμεύουν συγκεκριμένους πυρήνες.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                if (runtimeError != null) {
-                    Text(runtimeError!!, color = MaterialTheme.colorScheme.error)
+                OutlinedButton(
+                    onClick = { settingsExpanded = !settingsExpanded },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Ρυθμίσεις CPU: $cpuThreads νήματα" + if (settingsExpanded) " ▴" else " ▾") }
+                if (settingsExpanded) {
+                    Text("Υπολογισμός GGUF", style = MaterialTheme.typography.titleMedium)
+                    Text("Backend: CPU. Η GPU/Vulkan δεν είναι ενεργή σε αυτό το APK.")
+                    Text("Νήματα CPU: $cpuThreads / $maxCpuThreads")
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedButton(
+                            enabled = cpuThreads > 1 && !unloading,
+                            onClick = {
+                                val value = cpuThreads - 1
+                                runCatching {
+                                    VoiceGgufRuntimeSettings.setCpuThreads(
+                                        context, selected.getPath(context), value
+                                    )
+                                }.onSuccess {
+                                    cpuThreads = value
+                                    runtimeError = null
+                                }.onFailure { runtimeError = it.message }
+                            },
+                        ) { Text("−") }
+                        OutlinedButton(
+                            enabled = cpuThreads < maxCpuThreads && !unloading,
+                            onClick = {
+                                val value = cpuThreads + 1
+                                runCatching {
+                                    VoiceGgufRuntimeSettings.setCpuThreads(
+                                        context, selected.getPath(context), value
+                                    )
+                                }.onSuccess {
+                                    cpuThreads = value
+                                    runtimeError = null
+                                }.onFailure { runtimeError = it.message }
+                            },
+                        ) { Text("+") }
+                    }
+                    val activeThreads = engine?.lastLoadParams?.numThreads
+                    if (modelLoaded && activeThreads != null) {
+                        Text(
+                            if (activeThreads == cpuThreads) "Ενεργά CPU threads: $activeThreads"
+                            else "Ενεργά CPU threads: $activeThreads. Πάτησε Επαναφόρτωση για να χρησιμοποιηθούν $cpuThreads.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    } else {
+                        Text(
+                            "Η επιλογή εφαρμόζεται στην επόμενη φόρτωση. Τα threads δεν δεσμεύουν συγκεκριμένους πυρήνες.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    if (runtimeError != null) {
+                        Text(runtimeError!!, color = MaterialTheme.colorScheme.error)
+                    }
+    
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
