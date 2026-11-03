@@ -50,10 +50,12 @@ import com.google.ai.edge.litertlm.ToolProvider
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
@@ -471,6 +473,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     onDone: () -> Unit = {},
     onError: (String) -> Unit,
     allowThinking: Boolean = false,
+    useMixedVoice: Boolean = false,
   ) {
     val voiceTrace = if (audioMessages.isNotEmpty() && model.instance is LlamaCppEngine) {
       VoiceLatencyTrace.begin().also { it.mark("turn_requested") }
@@ -642,6 +645,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
           }
         }
 
+        var mixedVoiceActive = useMixedVoice && voiceRequested && voiceEngine != null
         val resultListener: (String, Boolean, String?) -> Unit =
           { partialResult, done, partialThinkingResult ->
             if (requestEpoch.get() != epoch) {
@@ -770,7 +774,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                   }
                 }
 
-                if (voiceRequested && voiceEngine != null &&
+                if (voiceRequested && voiceEngine != null && !mixedVoiceActive &&
                     assistantMsg is ChatMessageText && assistantMsg.content.isNotBlank()) {
                   val spokenAnswer = assistantMsg.content
                   setPreparing(true)
@@ -837,7 +841,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                       }
                     }
                   }
-                } else {
+                } else if (!mixedVoiceActive) {
                   setInProgress(false)
                   onDone()
                 }
@@ -877,6 +881,129 @@ open class LlmChatViewModelBase() : ChatViewModel() {
           allowThinking &&
             model.getBooleanConfigValue(key = ConfigKeys.ENABLE_THINKING, defaultValue = false)
         val extraContext = if (enableThinking) mapOf("enable_thinking" to "true") else null
+
+        if (mixedVoiceActive && voiceEngine != null) {
+          val audioChannel = Channel<OmniVoicePlayback.PcmChunk>(capacity = 4)
+          val combinedAudio = ByteArrayOutputStream()
+          var audioRate = 0
+          var producedText = false
+          var producedAudio = false
+          val playbackFailure = AtomicReference<Exception?>(null)
+          val playerJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+              voicePlayback.playPcmStream(audioChannel) {
+                voiceTrace?.mark("mixed_first_pcm_played")
+              }
+            } catch (cancelled: CancellationException) {
+              throw cancelled
+            } catch (error: Exception) {
+              playbackFailure.set(error)
+              audioChannel.cancel()
+            }
+          }
+          voicePlaybackJob = playerJob
+          try {
+            voiceTrace?.mark("mixed_generation_started")
+            voiceEngine.streamMixedResponse(effectiveInput) { chunk ->
+              kotlinx.coroutines.currentCoroutineContext().ensureActive()
+              if (requestEpoch.get() != epoch) {
+                throw CancellationException("Voice turn superseded")
+              }
+              if (chunk.text.isNotEmpty()) {
+                producedText = true
+                withContext(Dispatchers.Main) {
+                  if (requestEpoch.get() == epoch) {
+                    resultListener(chunk.text, false, null)
+                  }
+                }
+              }
+              if (chunk.pcm16.isNotEmpty()) {
+                if (audioRate == 0) {
+                  audioRate = chunk.sampleRate
+                  voiceTrace?.mark("mixed_first_pcm_ready")
+                }
+                check(chunk.sampleRate == audioRate && chunk.pcm16.size % 2 == 0) {
+                  "Μη έγκυρα δείγματα ήχου LFM3"
+                }
+                check(combinedAudio.size().toLong() + chunk.pcm16.size <= 8L * 1024 * 1024) {
+                  "Υπέρβαση του ορίου μνήμης ηχητικής απάντησης"
+                }
+                producedAudio = true
+                combinedAudio.write(chunk.pcm16)
+                audioChannel.send(OmniVoicePlayback.PcmChunk(audioRate, chunk.pcm16))
+              }
+            }
+            audioChannel.close()
+            check(producedText) { "Το LFM3 mixed mode δεν παρήγαγε κείμενο" }
+            if (!producedAudio) {
+              // Model may generate text without PCM. Reuse existing TTS.
+              mixedVoiceActive = false
+              withContext(Dispatchers.Main) {
+                if (requestEpoch.get() == epoch) resultListener("", true, null)
+              }
+              return@launch
+            }
+            withContext(Dispatchers.Main) {
+              if (requestEpoch.get() == epoch) resultListener("", true, null)
+            }
+            playerJob.join()
+            playbackFailure.get()?.let { throw it }
+            withContext(Dispatchers.Main) {
+              if (requestEpoch.get() == epoch) {
+                addMessage(
+                  model = model,
+                  message = ChatMessageAudioClip(
+                    audioData = combinedAudio.toByteArray(),
+                    sampleRate = audioRate,
+                    side = ChatSide.AGENT,
+                  ),
+                )
+                setPreparing(false)
+                setInProgress(false)
+                voiceTrace?.mark("voice_completed")
+                onDone()
+              }
+            }
+          } catch (cancelled: CancellationException) {
+            audioChannel.cancel()
+            playerJob.cancel()
+            if (playbackFailure.get() != null && requestEpoch.get() == epoch) {
+              withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
+                setPreparing(false)
+                setInProgress(false)
+                onError(playbackFailure.get()?.message ?: "Αποτυχία αναπαραγωγής φωνής")
+              }
+            }
+            throw cancelled
+          } catch (error: Exception) {
+            audioChannel.cancel()
+            playerJob.cancel()
+            if (requestEpoch.get() == epoch) {
+              if (!producedText && !producedAudio) {
+                // Failed native mixed turn rolls back before legacy retry.
+                Log.w(TAG, "Mixed LFM3 unavailable; using legacy text+TTS", error)
+                mixedVoiceActive = false
+                model.runtimeHelper.runInference(
+                  model = model, input = effectiveInput, images = images,
+                  audioClips = audioClips, resultListener = resultListener,
+                  cleanUpListener = cleanUpListener, onError = errorListener,
+                  coroutineScope = viewModelScope, extraContext = extraContext,
+                )
+              } else {
+                withContext(Dispatchers.Main) {
+                  if (requestEpoch.get() == epoch) {
+                    setPreparing(false)
+                    setInProgress(false)
+                    onError(error.message ?: "Η ταυτόχρονη φωνή απέτυχε")
+                  }
+                }
+              }
+            }
+          } finally {
+            if (voicePlaybackJob === playerJob) voicePlaybackJob = null
+          }
+          return@launch
+        }
 
         if (requestEpoch.get() != epoch) return@launch
         voiceTrace?.mark("text_inference_dispatched")
