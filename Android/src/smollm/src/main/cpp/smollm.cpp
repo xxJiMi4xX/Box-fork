@@ -111,7 +111,8 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_com_jegly_offlineLLM_smollm_SmolLM_loadModel(
     JNIEnv *env, jobject, jstring path, jfloat minP, jfloat temperature, jfloat topP,
     jint topK, jfloat repeatPenalty, jboolean storeChats, jlong contextSize,
-    jstring chatTemplate, jint nThreads, jboolean useMmap, jboolean useMlock, jstring mmprojPath) {
+    jstring chatTemplate, jint nThreads, jint nThreadsBatch, jint nGpuLayers,
+    jboolean gpuProjector, jboolean useMmap, jboolean useMlock, jstring mmprojPath) {
     jlong id = 0;
     checked(env, [&] {
         auto instance = std::make_shared<LLMInference>();
@@ -119,7 +120,8 @@ Java_com_jegly_offlineLLM_smollm_SmolLM_loadModel(
         const std::string tmpl = utf(env, chatTemplate);
         const std::string mmproj = utf(env, mmprojPath);
         instance->loadModel(p.c_str(), minP, temperature, topP, topK, repeatPenalty,
-                            storeChats, contextSize, tmpl.c_str(), nThreads, useMmap, useMlock, mmproj.c_str());
+                            storeChats, contextSize, tmpl.c_str(), nThreads, nThreadsBatch, nGpuLayers,
+                            gpuProjector, useMmap, useMlock, mmproj.c_str());
         id = nextId.fetch_add(1);
         std::lock_guard<std::mutex> lock(registryMutex);
         instances.emplace(id, std::move(instance));
