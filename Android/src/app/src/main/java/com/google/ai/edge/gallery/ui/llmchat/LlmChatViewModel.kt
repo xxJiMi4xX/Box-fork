@@ -111,10 +111,10 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     val modelName = model.name
     val convId = conversationIds[modelName]
     val gguf = model.instance is LlamaCppEngine
+    val historyGate = if (gguf) beginHistorySynchronization(model) else null
     if (gguf) {
       // A newly edited system instruction must take effect in the native
       // prompt, not merely in the UI/Room metadata.
-      beginHistorySynchronization(model)
       stopResponse(model)
     }
     viewModelScope.launch(Dispatchers.IO) {
@@ -137,7 +137,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
         errorMessage = error.message ?: "Αδυναμία εφαρμογής system prompt"
         Log.e(TAG, "Failed to apply system prompt", error)
       } finally {
-        if (gguf) endHistorySynchronization(model, errorMessage)
+        if (historyGate != null) endHistorySynchronization(model, historyGate, errorMessage)
       }
     }
   }
@@ -152,6 +152,8 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     selectedConversationModel = model.name
     selectedConversationModelObject = model
   }
+
+  fun getCurrentConversationId(model: Model): String? = conversationIds[model.name]
 
   fun setCurrentConversationId(model: Model, conversationId: String) {
     conversationIds[model.name] = conversationId
@@ -180,17 +182,27 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     }
   }
 
-  fun beginHistorySynchronization(model: Model) {
+  fun beginHistorySynchronization(model: Model): CompletableDeferred<Unit> {
+    val gate = CompletableDeferred<Unit>()
     historyErrors.remove(model.name)
-    historyGates.put(model.name, CompletableDeferred())?.complete(Unit)
+    historyGates.put(model.name, gate)?.complete(Unit)
+    return gate
   }
 
-  fun endHistorySynchronization(model: Model, error: String? = null) {
-    if (!error.isNullOrBlank()) {
-      historyErrors[model.name] = error
-      reportVoiceError(model, "Η επαναφορά συνομιλίας απέτυχε: $error")
+  fun endHistorySynchronization(
+    model: Model,
+    gate: CompletableDeferred<Unit>,
+    error: String? = null,
+  ) {
+    // A canceled/obsolete restore is not allowed to complete the gate for
+    // a newer reload or a newer selected conversation.
+    if (historyGates[model.name] === gate) {
+      if (!error.isNullOrBlank()) {
+        historyErrors[model.name] = error
+        reportVoiceError(model, "Η επαναφορά συνομιλίας απέτυχε: $error")
+      }
     }
-    historyGates[model.name]?.complete(Unit)
+    gate.complete(Unit)
   }
 
   /**
@@ -267,7 +279,11 @@ open class LlmChatViewModelBase() : ChatViewModel() {
   }
 
   private suspend fun requireHistoryReady(model: Model) {
-    historyGates[model.name]?.await()
+    while (true) {
+      val gate = historyGates[model.name] ?: break
+      gate.await()
+      if (historyGates[model.name] === gate) break
+    }
     val failure = historyErrors[model.name]
     check(failure == null) { "Η συνομιλία δεν έχει αποκατασταθεί: $failure" }
   }
