@@ -18,6 +18,8 @@ package com.google.ai.edge.gallery.ui.modelmanager
 
 import android.content.Context
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import android.provider.OpenableColumns
 import android.util.Log
 import androidx.compose.animation.core.Animatable
@@ -84,6 +86,7 @@ import com.google.ai.edge.gallery.ui.common.ensureValidFileName
 import com.google.ai.edge.gallery.ui.common.humanReadableSize
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import kotlinx.coroutines.CoroutineScope
@@ -147,17 +150,45 @@ private val IMPORT_CONFIGS_LLM: List<Config> =
 fun ModelImportDialog(
   uri: Uri,
   onDismiss: () -> Unit,
-  onDone: (ImportedModel) -> Unit,
+  onDone: (ImportedModel, Uri?) -> Unit,
   defaultValues: Map<ConfigKey, Any> = emptyMap(),
 ) {
   val context = LocalContext.current
   val info = remember { getFileSizeAndDisplayNameFromUri(context = context, uri = uri) }
   val fileSize by remember { mutableLongStateOf(info.first) }
   val fileName by remember { mutableStateOf(ensureValidFileName(info.second)) }
+  val isGguf = fileName.endsWith(".gguf", ignoreCase = true)
+  var projectorUri by remember { mutableStateOf<Uri?>(null) }
+  var projectorDisplayName by remember { mutableStateOf("") }
+  var projectorSize by remember { mutableLongStateOf(0L) }
+  val projectorPicker = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.OpenDocument(),
+  ) { selected ->
+    if (selected != null) {
+      val metadata = getFileSizeAndDisplayNameFromUri(context, selected)
+      projectorUri = selected
+      projectorDisplayName = metadata.second
+      projectorSize = metadata.first
+    }
+  }
+  val importConfigs = remember(isGguf) {
+    if (!isGguf) IMPORT_CONFIGS_LLM else IMPORT_CONFIGS_LLM.filter { config ->
+      config.key != ConfigKeys.COMPATIBLE_ACCELERATORS &&
+        config.key != ConfigKeys.SUPPORT_IMAGE &&
+        config.key != ConfigKeys.SUPPORT_AUDIO &&
+        config.key != ConfigKeys.SUPPORT_MOBILE_ACTIONS &&
+        config.key != ConfigKeys.SUPPORT_THINKING
+    } + SegmentedButtonConfig(
+      key = ConfigKeys.COMPATIBLE_ACCELERATORS,
+      defaultValue = Accelerator.CPU.label,
+      options = listOf(Accelerator.CPU.label),
+      allowMultiple = false,
+    )
+  }
 
   val initialValues: Map<String, Any> = remember {
     mutableMapOf<String, Any>().apply {
-      for (config in IMPORT_CONFIGS_LLM) {
+      for (config in importConfigs) {
         put(config.key.label, config.defaultValue)
       }
       put(ConfigKeys.NAME.label, fileName)
@@ -202,7 +233,29 @@ fun ModelImportDialog(
           verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
           // Default configs for users to set.
-          ConfigEditorsPanel(configs = IMPORT_CONFIGS_LLM, values = values)
+          ConfigEditorsPanel(configs = importConfigs, values = values)
+          if (isGguf) {
+            Text(
+              "GGUF uses the CPU in this build. Image, audio, actions and thinking " +
+                "will be enabled only after backend validation.",
+              style = MaterialTheme.typography.bodySmall,
+            )
+            TextButton(onClick = { projectorPicker.launch(arrayOf("*/*")) }) {
+              Text(if (projectorUri == null) "Select matching mmproj GGUF" else "Change mmproj GGUF")
+            }
+            if (projectorUri != null) {
+              Text(projectorDisplayName.ifBlank { "Selected projector" },
+                style = MaterialTheme.typography.bodySmall)
+              TextButton(onClick = {
+                projectorUri = null
+                projectorDisplayName = ""
+                projectorSize = 0L
+              }) { Text("Remove projector") }
+            }
+            if (projectorUri != null && !projectorDisplayName.endsWith(".gguf", ignoreCase = true)) {
+              Text("Select a .gguf projector file", color = MaterialTheme.colorScheme.error)
+            }
+          }
         }
 
         // Button row.
@@ -215,8 +268,9 @@ fun ModelImportDialog(
 
           // Import button
           Button(
+            enabled = projectorUri == null || projectorDisplayName.endsWith(".gguf", ignoreCase = true),
             onClick = {
-              val supportedAccelerators =
+              val supportedAccelerators = if (isGguf) listOf(Accelerator.CPU.label) else
                 (convertValueToTargetType(
                     value = values.get(ConfigKeys.COMPATIBLE_ACCELERATORS.label)!!,
                     valueType = ValueType.STRING,
@@ -247,25 +301,25 @@ fun ModelImportDialog(
                   valueType = ValueType.FLOAT,
                 )
                   as Float
-              val supportImage =
+              val supportImage = if (isGguf) false else
                 convertValueToTargetType(
                   value = values.get(ConfigKeys.SUPPORT_IMAGE.label)!!,
                   valueType = ValueType.BOOLEAN,
                 )
                   as Boolean
-              val supportAudio =
+              val supportAudio = if (isGguf) false else
                 convertValueToTargetType(
                   value = values.get(ConfigKeys.SUPPORT_AUDIO.label)!!,
                   valueType = ValueType.BOOLEAN,
                 )
                   as Boolean
-              val supportMobileActions =
+              val supportMobileActions = if (isGguf) false else
                 convertValueToTargetType(
                   value = values.get(ConfigKeys.SUPPORT_MOBILE_ACTIONS.label)!!,
                   valueType = ValueType.BOOLEAN,
                 )
                   as Boolean
-              val supportThinking =
+              val supportThinking = if (isGguf) false else
                 convertValueToTargetType(
                   value = values.get(ConfigKeys.SUPPORT_THINKING.label)!!,
                   valueType = ValueType.BOOLEAN,
@@ -286,10 +340,12 @@ fun ModelImportDialog(
                       .setSupportAudio(supportAudio)
                       .setSupportMobileActions(supportMobileActions)
                       .setSupportThinking(supportThinking)
+                      .setProjectorFileName(if (isGguf && projectorUri != null) "$fileName.mmproj.gguf" else "")
+                      .setProjectorFileSize(if (isGguf && projectorUri != null) projectorSize else 0L)
                       .build()
                   )
                   .build()
-              onDone(importedModel)
+              onDone(importedModel, projectorUri)
             }
           ) {
             Text("Import")
@@ -304,6 +360,7 @@ fun ModelImportDialog(
 fun ModelImportingDialog(
   uri: Uri,
   info: ImportedModel,
+  projectorUri: Uri?,
   onDismiss: () -> Unit,
   onDone: (ImportedModel) -> Unit,
 ) {
@@ -320,6 +377,9 @@ fun ModelImportingDialog(
       fileName = info.fileName,
       fileSize = info.fileSize,
       uri = uri,
+      projectorUri = projectorUri,
+      projectorFileName = info.llmConfig.projectorFileName,
+      projectorFileSize = info.llmConfig.projectorFileSize,
       onDone = { onDone(info) },
       onProgress = { progress = it },
       onError = { error = it },
@@ -393,58 +453,96 @@ private fun importModel(
   fileName: String,
   fileSize: Long,
   uri: Uri,
+  projectorUri: Uri?,
+  projectorFileName: String,
+  projectorFileSize: Long,
   onDone: () -> Unit,
   onProgress: (Float) -> Unit,
   onError: (String) -> Unit,
 ) {
-  // TODO: handle error.
   coroutineScope.launch(Dispatchers.IO) {
-    // Get the last component of the uri path as the imported file name.
-    val decodedUri = URLDecoder.decode(uri.toString(), StandardCharsets.UTF_8.name())
-    Log.d(TAG, "importing model from $decodedUri. File name: $fileName. File size: $fileSize")
-
-    // Create <app_external_dir>/imports if not exist.
-    val importsDir = File(context.getExternalFilesDir(null), IMPORTS_DIR)
-    if (!importsDir.exists()) {
-      importsDir.mkdirs()
-    }
-
-    // Import by copying the file over.
-    val outputFile = File(context.getExternalFilesDir(null), "$IMPORTS_DIR/$fileName")
-    val outputStream = FileOutputStream(outputFile)
-    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-    var bytesRead: Int
-    var lastSetProgressTs: Long = 0
-    var importedBytes = 0L
-    val inputStream = context.contentResolver.openInputStream(uri)
+    val staged = mutableListOf<Pair<File, File>>()
+    val backups = mutableListOf<Pair<File, File>>()
+    val committedNew = mutableListOf<File>()
     try {
-      if (inputStream != null) {
-        while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-          outputStream.write(buffer, 0, bytesRead)
-          importedBytes += bytesRead
-
-          // Report progress every 200 ms.
-          val curTs = System.currentTimeMillis()
-          if (curTs - lastSetProgressTs > 200) {
-            Log.d(TAG, "importing progress: $importedBytes, $fileSize")
-            lastSetProgressTs = curTs
-            if (fileSize != 0L) {
-              onProgress(importedBytes.toFloat() / fileSize.toFloat())
+      val baseDir = context.getExternalFilesDir(null) ?: throw IOException("App storage unavailable")
+      val importsDir = File(baseDir, IMPORTS_DIR)
+      if (!importsDir.isDirectory && !importsDir.mkdirs()) {
+        throw IOException("Failed to create imports directory")
+      }
+      val sources = mutableListOf(Triple(uri, fileName, fileSize))
+      if (projectorUri != null) {
+        if (projectorFileName.isBlank()) throw IOException("Missing projector name")
+        sources.add(Triple(projectorUri, projectorFileName, projectorFileSize))
+      }
+      val total = sources.sumOf { it.third.coerceAtLeast(0L) }
+      if (total > 0 && importsDir.usableSpace < total) {
+        throw IOException("Insufficient device storage")
+      }
+      var copiedTotal = 0L
+      for ((sourceUri, targetName, expectedSize) in sources) {
+        if (targetName.isBlank() || targetName == "." || targetName == ".." ||
+            File(targetName).name != targetName) {
+          throw IOException("Unsafe import file name")
+        }
+        val target = File(importsDir, targetName)
+        val temp = File.createTempFile(".box-stage-", ".partial", importsDir)
+        staged.add(temp to target)
+        var copied = 0L
+        val input = context.contentResolver.openInputStream(sourceUri)
+          ?: throw IOException("Unable to open selected file")
+        input.use { stream ->
+          FileOutputStream(temp).use { output ->
+            val buffer = ByteArray(256 * 1024)
+            while (true) {
+              val n = stream.read(buffer)
+              if (n < 0) break
+              if (n == 0) continue
+              output.write(buffer, 0, n)
+              copied += n
+              copiedTotal += n
+              if (total > 0L) withContext(Dispatchers.Main) {
+                onProgress((copiedTotal.toFloat() / total.toFloat()).coerceIn(0f, 1f))
+              }
             }
+            output.fd.sync()
           }
         }
+        if (copied == 0L || (expectedSize > 0L && copied != expectedSize)) {
+          throw IOException("Incomplete imported file: " + targetName)
+        }
+      }
+      // Stage all selected files before touching existing imports.
+      for ((temp, target) in staged) {
+        if (target.exists()) {
+          val backup = File.createTempFile(".box-backup-", ".bak", importsDir)
+          if (!backup.delete() || !target.renameTo(backup)) {
+            throw IOException("Failed to back up existing import")
+          }
+          backups.add(backup to target)
+        } else {
+          committedNew.add(target)
+        }
+        if (!temp.renameTo(target)) throw IOException("Failed to commit imported file")
+      }
+      backups.forEach { (backup, _) -> backup.delete() }
+      withContext(Dispatchers.Main) {
+        onProgress(1f)
+        onDone()
       }
     } catch (e: Exception) {
-      e.printStackTrace()
-      onError(e.message ?: "Failed to import")
-      return@launch
+      committedNew.forEach { if (it.exists()) it.delete() }
+      backups.asReversed().forEach { (backup, original) ->
+        if (original.exists()) original.delete()
+        backup.renameTo(original)
+      }
+      withContext(Dispatchers.Main) {
+        Log.e(TAG, "Import failed", e)
+        onError(e.message ?: "Failed to import")
+      }
     } finally {
-      inputStream?.close()
-      outputStream.close()
+      staged.forEach { (temp, _) -> if (temp.exists()) temp.delete() }
     }
-    Log.d(TAG, "import done")
-    onProgress(1f)
-    onDone()
   }
 }
 

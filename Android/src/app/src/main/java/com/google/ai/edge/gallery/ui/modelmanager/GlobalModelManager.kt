@@ -121,6 +121,7 @@ fun GlobalModelManager(
   var showUnsupportedWebModelDialog by remember { mutableStateOf(false) }
   val selectedLocalModelFileUri = remember { mutableStateOf<Uri?>(null) }
   val selectedImportedModelInfo = remember { mutableStateOf<ImportedModel?>(null) }
+  val selectedProjectorUri = remember { mutableStateOf<Uri?>(null) }
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
   var showImportDialog by remember { mutableStateOf(false) }
   var showImportingDialog by remember { mutableStateOf(false) }
@@ -432,7 +433,8 @@ fun GlobalModelManager(
       ModelImportDialog(
         uri = uri,
         onDismiss = { showImportDialog = false },
-        onDone = { info ->
+        onDone = { info, projectorUri ->
+          selectedProjectorUri.value = projectorUri
           selectedImportedModelInfo.value = info
           showImportDialog = false
           showImportingDialog = true
@@ -448,9 +450,11 @@ fun GlobalModelManager(
         ModelImportingDialog(
           uri = uri,
           info = info,
+          projectorUri = selectedProjectorUri.value,
           onDismiss = { showImportingDialog = false },
           onDone = {
             viewModel.addImportedLlmModel(info = it)
+            selectedProjectorUri.value = null
             showImportingDialog = false
 
             // Show a snack bar for successful import.
