@@ -552,27 +552,45 @@ open class LlmChatViewModelBase() : ChatViewModel() {
   ) {
     viewModelScope.launch(Dispatchers.Default) {
       setIsResettingSession(true)
-      clearAllMessages(model = model)
-      stopResponse(model = model)
+      try {
+        clearAllMessages(model = model)
+        stopResponse(model = model)
 
-      while (true) {
-        try {
-          model.runtimeHelper.resetConversation(
-            model = model,
-            supportImage = supportImage,
-            supportAudio = supportAudio,
-            systemInstruction = systemInstruction,
-            tools = tools,
-            enableConversationConstrainedDecoding = enableConversationConstrainedDecoding,
-          )
-          break
-        } catch (e: Exception) {
-          Log.d(TAG, "Failed to reset session. Trying again")
+        var succeeded = false
+        var lastError: Exception? = null
+        for (attempt in 1..3) {
+          try {
+            model.runtimeHelper.resetConversation(
+              model = model,
+              supportImage = supportImage,
+              supportAudio = supportAudio,
+              systemInstruction = systemInstruction,
+              tools = tools,
+              enableConversationConstrainedDecoding = enableConversationConstrainedDecoding,
+            )
+            succeeded = true
+            break
+          } catch (cancelled: CancellationException) {
+            throw cancelled
+          } catch (error: Exception) {
+            lastError = error
+            Log.e(TAG, "Failed to reset session ($attempt of 3)", error)
+            if (attempt < 3) delay(250L * attempt)
+          }
         }
-        delay(200)
+        if (!succeeded) {
+          addMessage(
+            model = model,
+            message = ChatMessageError(
+              "Η επαναφορά απέτυχε: ${lastError?.message ?: "άγνωστο σφάλμα"}"
+            ),
+          )
+        } else {
+          onDone()
+        }
+      } finally {
+        setIsResettingSession(false)
       }
-      setIsResettingSession(false)
-      onDone()
     }
   }
 
