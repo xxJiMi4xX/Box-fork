@@ -1,5 +1,10 @@
 #include "LLMInference.h"
 #include "ggml-backend.h"
+#include "ggml-cpu.h"
+#include <sched.h>
+#include <fstream>
+#include <numeric>
+#include <array>
 #include "mtmd-helper.h"
 #include <memory>
 #include <mutex>
@@ -13,13 +18,43 @@
 #include <sstream>
 #include <stdexcept>
 
+// Detect big cores by their hardware maximum frequency, not Linux CPU IDs.
+// Android device CPUs are heterogeneous and their indices are not portable.
+static std::vector<int> getFastestCores(size_t requested) {
+    cpu_set_t allowed;
+    CPU_ZERO(&allowed);
+    if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0) return {};
+    std::vector<std::pair<long, int>> ranked;
+    for (int cpu = 0; cpu < CPU_SETSIZE && cpu < GGML_MAX_N_THREADS; ++cpu) {
+        if (!CPU_ISSET(cpu, &allowed)) continue;
+        const std::string dir = "/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/cpufreq/";
+        long maxFreq = 0;
+        for (const char *filename : {"cpuinfo_max_freq", "scaling_max_freq"}) {
+            std::ifstream input(dir + filename);
+            if (input >> maxFreq && maxFreq > 0) break;
+        }
+        if (maxFreq <= 0) return {}; // Do not guess core topology.
+        ranked.emplace_back(maxFreq, cpu);
+    }
+    if (ranked.size() < requested) return {};
+    std::sort(ranked.begin(), ranked.end(), [](const auto &a, const auto &b) {
+        return a.first == b.first ? a.second < b.second : a.first > b.first;
+    });
+    std::vector<int> cores;
+    for (size_t i = 0; i < requested; ++i) cores.push_back(ranked[i].second);
+    return cores;
+}
+
 LLMInference::~LLMInference() {
     stopRequested_.store(true);
     std::lock_guard<std::mutex> lock(mutex_);
     if (mixedGen_) mtmd_helper_gen_audio_free(mixedGen_);
     if (mmproj_) mtmd_free(mmproj_);
     if (sampler_) llama_sampler_free(sampler_);
+    if (context_ && performancePool_) llama_detach_threadpool(context_);
     if (context_) llama_free(context_);
+    if (performancePool_) ggml_threadpool_free(performancePool_);
+    if (batchPool_) ggml_threadpool_free(batchPool_);
     if (model_) llama_model_free(model_);
 }
 
@@ -27,7 +62,7 @@ void LLMInference::loadModel(const char *path, float minP, float temperature, fl
                              int topK, float repeatPenalty, bool storeChats,
                              long contextSize, const char *chatTemplate,
                              int nThreads, int nThreadsBatch, int nGpuLayers, bool gpuProjector,
-                             bool useMmap, bool useMlock, const char *mmprojPath) {
+                             bool performanceCoresOnly, bool useMmap, bool useMlock, const char *mmprojPath) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!path || !*path || model_) throw std::invalid_argument("Invalid model path or duplicate load");
     if (!std::isfinite(temperature) || !std::isfinite(minP) || !std::isfinite(topP) ||
@@ -68,6 +103,24 @@ void LLMInference::loadModel(const char *path, float minP, float temperature, fl
     cp.embeddings = true; // Required for LFM3 audio-generation hidden state.
     context_ = llama_init_from_model(model_, cp);
     if (!context_) throw std::runtime_error("Cannot initialize llama context");
+    if (performanceCoresOnly) {
+        if (nThreads > 4)
+            throw std::invalid_argument("Performance cores mode requires 1..4 decode threads");
+        const std::vector<int> fastest = getFastestCores(4);
+        if (fastest.size() != 4)
+            throw std::runtime_error("Cannot verify the four fastest Android CPU cores");
+        auto p = ggml_threadpool_params_default(nThreads);
+        for (int core : fastest) p.cpumask[core] = true;
+        p.strict_cpu = true;
+        performancePool_ = ggml_threadpool_new(&p);
+        if (!performancePool_)
+            throw std::runtime_error("Cannot create performance-core CPU threadpool");
+        auto batchParams = ggml_threadpool_params_default(nThreadsBatch);
+        batchPool_ = ggml_threadpool_new(&batchParams);
+        if (!batchPool_)
+            throw std::runtime_error("Cannot create CPU prompt threadpool");
+        llama_attach_threadpool(context_, performancePool_, batchPool_);
+    }
     llama_sampler_chain_params sc = llama_sampler_chain_default_params();
     sc.no_perf = true;
     sampler_ = llama_sampler_chain_init(sc);
