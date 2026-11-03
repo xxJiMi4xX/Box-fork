@@ -23,7 +23,8 @@ public:
 
     void loadModel(const char *path, float minP, float temperature, float topP, int topK,
                    float repeatPenalty, bool storeChats, long contextSize,
-                   const char *chatTemplate, int nThreads, bool useMmap, bool useMlock, const char *mmprojPath);
+                   const char *chatTemplate, int nThreads, int nThreadsBatch, int nGpuLayers, bool gpuProjector,
+                   bool useMmap, bool useMlock, const char *mmprojPath);
     void addChatMessage(const char *message, const char *role);
     float getResponseGenerationTime();
     int getContextSizeUsed();
