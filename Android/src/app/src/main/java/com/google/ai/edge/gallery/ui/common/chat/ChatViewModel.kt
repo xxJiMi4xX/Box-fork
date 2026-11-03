@@ -58,15 +58,16 @@ abstract class ChatViewModel : ViewModel() {
   protected abstract val chatRepository: ChatRepository
 
   fun addMessage(model: Model, message: ChatMessage) {
-    val newMessagesByModel = _uiState.value.messagesByModel.toMutableMap()
-    val newMessages = newMessagesByModel[model.name]?.toMutableList() ?: mutableListOf()
-    newMessagesByModel[model.name] = newMessages
-    // Remove prompt template message if it is to current last message.
-    if (newMessages.size > 0 && newMessages.last().type == ChatMessageType.PROMPT_TEMPLATES) {
-      newMessages.removeAt(newMessages.size - 1)
+    _uiState.update { state ->
+      val byModel = state.messagesByModel.toMutableMap()
+      val messages = byModel[model.name]?.toMutableList() ?: mutableListOf()
+      if (messages.lastOrNull()?.type == ChatMessageType.PROMPT_TEMPLATES) {
+        messages.removeAt(messages.lastIndex)
+      }
+      messages.add(message)
+      byModel[model.name] = messages
+      state.copy(messagesByModel = byModel)
     }
-    newMessages.add(message)
-    _uiState.update { _uiState.value.copy(messagesByModel = newMessagesByModel) }
   }
 
   fun insertMessageAfter(model: Model, anchorMessage: ChatMessage, messageToAdd: ChatMessage) {
@@ -95,19 +96,21 @@ abstract class ChatViewModel : ViewModel() {
   }
 
   fun removeLastMessage(model: Model) {
-    val newMessagesByModel = _uiState.value.messagesByModel.toMutableMap()
-    val newMessages = newMessagesByModel[model.name]?.toMutableList() ?: mutableListOf()
-    if (newMessages.size > 0) {
-      newMessages.removeAt(newMessages.size - 1)
+    _uiState.update { state ->
+      val byModel = state.messagesByModel.toMutableMap()
+      val messages = byModel[model.name]?.toMutableList() ?: mutableListOf()
+      if (messages.isNotEmpty()) messages.removeAt(messages.lastIndex)
+      byModel[model.name] = messages
+      state.copy(messagesByModel = byModel)
     }
-    newMessagesByModel[model.name] = newMessages
-    _uiState.update { _uiState.value.copy(messagesByModel = newMessagesByModel) }
   }
 
   fun clearAllMessages(model: Model) {
-    val newMessagesByModel = _uiState.value.messagesByModel.toMutableMap()
-    newMessagesByModel[model.name] = mutableListOf()
-    _uiState.update { _uiState.value.copy(messagesByModel = newMessagesByModel) }
+    _uiState.update { state ->
+      val byModel = state.messagesByModel.toMutableMap()
+      byModel[model.name] = mutableListOf()
+      state.copy(messagesByModel = byModel)
+    }
   }
 
   fun getLastMessage(model: Model): ChatMessage? {
