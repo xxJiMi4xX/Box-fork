@@ -137,6 +137,22 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     historyErrors.remove(model.name)
   }
 
+  private suspend fun createFreshConversationAfterReset(model: Model) {
+    // Let any already completed native turn finish its asynchronous Room
+    // commit before creating the fresh conversation. The new row must remain
+    // the most recently updated row for auto-resume after a reset.
+    lastCommitJob?.join()
+    conversationMutex.withLock {
+      val fresh = chatRepository.createConversation(
+        title = "New Chat",
+        taskType = "llm_chat",
+        modelName = model.name,
+        systemPrompt = _currentSystemPrompt.value,
+      )
+      conversationIds[model.name] = fresh.id
+    }
+  }
+
   fun beginHistorySynchronization(model: Model) {
     historyErrors.remove(model.name)
     historyGates.put(model.name, CompletableDeferred())?.complete(Unit)
@@ -811,6 +827,14 @@ open class LlmChatViewModelBase() : ChatViewModel() {
         } else {
           clearAllMessages(model = model)
           beginNewConversation(model)
+          try {
+            createFreshConversationAfterReset(model)
+          } catch (cancelled: CancellationException) {
+            throw cancelled
+          } catch (error: Exception) {
+            Log.e(TAG, "Native reset succeeded but new Room conversation failed", error)
+            reportVoiceError(model, "Η νέα συνομιλία δεν αποθηκεύτηκε: ${error.message}")
+          }
           onDone()
         }
       } finally {
