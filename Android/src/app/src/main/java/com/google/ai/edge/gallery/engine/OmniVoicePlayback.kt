@@ -11,10 +11,12 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.channels.ReceiveChannel
 
 /** Interruptible synthesized voice playback with Android audio-focus handling. */
 class OmniVoicePlayback {
@@ -53,6 +55,122 @@ class OmniVoicePlayback {
                 runCatching { old.flush() }
                 runCatching { old.release() }
             }
+        }
+    }
+
+    data class PcmChunk(val sampleRate: Int, val bytes: ByteArray)
+
+    /**
+     * One long-lived AudioTrack for LFM3 interleaved output. Unlike play(),
+     * this consumes frames as the model generates them and never waits for a WAV.
+     */
+    suspend fun playPcmStream(
+        chunks: ReceiveChannel<PcmChunk>,
+        onFirstPcmPlayed: (() -> Unit)? = null,
+    ) = withContext(Dispatchers.IO) {
+        val first = chunks.receiveCatching().getOrNull() ?: return@withContext
+        require(first.sampleRate in 8000..192000 && first.bytes.isNotEmpty() &&
+            first.bytes.size % 2 == 0) { "Invalid first streaming PCM chunk" }
+
+        stop()
+        val rate = first.sampleRate
+        val minimum = AudioTrack.getMinBufferSize(
+            rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        require(minimum > 0) { "Unsupported streaming PCM sample rate" }
+        val attributes = AudioAttributes.Builder()
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            .build()
+        val manager = audioManager
+        val focus = if (manager != null && OmniLiveVoiceController.activeMicrophones.get() == 0) {
+            AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                .setAudioAttributes(attributes)
+                .setOnAudioFocusChangeListener { change ->
+                    if (change == AudioManager.AUDIOFOCUS_LOSS ||
+                        change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) stop()
+                }
+                .build()
+        } else null
+        if (focus != null) {
+            check(manager!!.requestAudioFocus(focus) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                "Failed to acquire streaming audio focus"
+            }
+        }
+
+        var track: AudioTrack? = null
+        var counted = false
+        try {
+            val player = AudioTrack.Builder()
+                .setAudioAttributes(attributes)
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(rate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build())
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .setBufferSizeInBytes(maxOf(minimum, 8192))
+                .build()
+            track = player
+            check(player.state == AudioTrack.STATE_INITIALIZED) { "AudioTrack init failed" }
+            synchronized(lock) { active = player }
+            player.play()
+            activePlayers.incrementAndGet()
+            counted = true
+            privateOutputRouted.set(privateDevice(player.routedDevice))
+            var firstPlayed = false
+            var totalSamples = 0L
+
+            suspend fun writeChunk(chunk: PcmChunk) {
+                check(chunk.sampleRate == rate && chunk.bytes.size % 2 == 0) {
+                    "Mixed audio sample-rate or alignment changed"
+                }
+                var offset = 0
+                while (offset < chunk.bytes.size && currentCoroutineContext().isActive &&
+                    synchronized(lock) { active === player }) {
+                    privateOutputRouted.set(privateDevice(player.routedDevice))
+                    val size = minOf(8192, chunk.bytes.size - offset)
+                    val written = player.write(chunk.bytes, offset, size, AudioTrack.WRITE_BLOCKING)
+                    check(written > 0) { "Streaming AudioTrack write failed: $written" }
+                    offset += written
+                    totalSamples += written / 2L
+                    if (!firstPlayed && player.playbackHeadPosition > 0) {
+                        firstPlayed = true
+                        onFirstPcmPlayed?.invoke()
+                    }
+                }
+            }
+            writeChunk(first)
+            for (chunk in chunks) {
+                currentCoroutineContext().ensureActive()
+                if (!synchronized(lock) { active === player }) break
+                writeChunk(chunk)
+            }
+
+            val deadlineMs = totalSamples * 1000L / rate + 5000L
+            withTimeoutOrNull(deadlineMs) {
+                while (currentCoroutineContext().isActive &&
+                    synchronized(lock) { active === player } &&
+                    player.playState == AudioTrack.PLAYSTATE_PLAYING &&
+                    player.playbackHeadPosition.toLong() < totalSamples) {
+                    if (!firstPlayed && player.playbackHeadPosition > 0) {
+                        firstPlayed = true
+                        onFirstPcmPlayed?.invoke()
+                    }
+                    delay(20)
+                }
+            }
+        } finally {
+            if (counted && activePlayers.decrementAndGet() == 0) {
+                privateOutputRouted.set(false)
+            }
+            synchronized(lock) { if (active === track) active = null }
+            track?.let {
+                runCatching { it.pause() }
+                runCatching { it.flush() }
+                runCatching { it.release() }
+            }
+            if (focus != null) runCatching { manager!!.abandonAudioFocusRequest(focus) }
         }
     }
 
