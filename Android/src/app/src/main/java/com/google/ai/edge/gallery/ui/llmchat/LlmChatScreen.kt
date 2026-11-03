@@ -317,6 +317,21 @@ fun ChatViewWrapper(
             context = context, task = task, model = model, force = true
           )
         }
+        if (GgufAudioFiles.findProjector(context, model.getPath(context)) != null) {
+          OmniLiveVoicePanel(
+            model = model,
+            viewModel = viewModel,
+            onError = { errorMessage ->
+              viewModel.handleError(
+                context = context,
+                task = task,
+                model = model,
+                errorMessage = errorMessage,
+                modelManagerViewModel = modelManagerViewModel,
+              )
+            },
+          )
+        }
       }
       aboveInputComposable(model)
     },
