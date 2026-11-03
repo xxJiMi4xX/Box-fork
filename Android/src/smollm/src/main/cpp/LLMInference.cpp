@@ -418,7 +418,8 @@ LLMInference::MixedStep LLMInference::mixedCompletionLoop() {
         contextUsed_ = static_cast<int>(
             llama_memory_seq_pos_max(llama_get_memory(context_), 0) + 1);
         result.done = done;
-        if (done) finishGeneration(true);
+        // Never commit a user turn if no assistant text was produced.
+        if (done) finishGeneration(!response_.empty());
         return result;
     } catch (...) {
         finishGeneration(false);
