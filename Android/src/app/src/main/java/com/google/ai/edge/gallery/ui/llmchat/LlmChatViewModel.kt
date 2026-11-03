@@ -77,6 +77,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
   @Volatile private var selectedConversationModelObject: Model? = null
   private val conversationMutex = Mutex()
   private var lastCommitJob: Job? = null
+  private val persistenceFailures = ConcurrentHashMap<String, String>()
   private val historyGates = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
   private val historyErrors = ConcurrentHashMap<String, String>()
   private val voicePlayback = OmniVoicePlayback()
@@ -171,6 +172,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
   fun beginNewConversation(model: Model) {
     conversationIds.remove(model.name)
     historyErrors.remove(model.name)
+    persistenceFailures.remove(model.name)
   }
 
   private suspend fun createFreshConversationAfterReset(model: Model) {
@@ -304,11 +306,13 @@ open class LlmChatViewModelBase() : ChatViewModel() {
             assistantText = assistant,
             latencyMs = latencyMs,
           )
+          persistenceFailures.remove(model.name)
         }
       } catch (cancelled: CancellationException) {
         throw cancelled
       } catch (error: Exception) {
         Log.e(TAG, "Failed to commit GGUF conversation turn", error)
+        persistenceFailures[model.name] = error.message ?: "Άγνωστο σφάλμα Room"
         withContext(Dispatchers.Main) {
           addMessage(
             model = model,
@@ -573,6 +577,47 @@ open class LlmChatViewModelBase() : ChatViewModel() {
           }
         } else null
         val turnInput = effectiveInput
+        if (ggufConversationId != null) {
+          try {
+            // Native generation and encrypted Room cannot share one DB
+            // transaction. Treat Room as authoritative at the start of every
+            // new turn, after the preceding completion has been committed.
+            lastCommitJob?.join()
+            val failure = persistenceFailures[model.name]
+            check(failure == null) {
+              "Ο προηγούμενος γύρος δεν αποθηκεύτηκε. Απαιτείται επαναφορά: $failure"
+            }
+            val rows = chatRepository.getMessagesSync(ggufConversationId)
+            val paired = mutableListOf<Pair<String, String>>()
+            var pending: String? = null
+            for (row in rows) {
+              when (row.role) {
+                "user" -> pending = row.content
+                "assistant" -> {
+                  val userText = pending
+                  if (userText != null) {
+                    paired += "user" to userText
+                    paired += "assistant" to row.content
+                    pending = null
+                  }
+                }
+              }
+            }
+            (model.instance as LlamaCppEngine).restoreConversation(
+              systemPromptsByModel[model.name] ?: "",
+              paired.takeLast(200),
+            )
+          } catch (cancelled: CancellationException) {
+            throw cancelled
+          } catch (error: Exception) {
+            if (requestEpoch.get() == epoch) {
+              setPreparing(false)
+              setInProgress(false)
+              reportVoiceError(model, error.message ?: "Η συνεδρία δεν είναι συνεπής")
+            }
+            return@launch
+          }
+        }
 
         val resultListener: (String, Boolean, String?) -> Unit =
           { partialResult, done, partialThinkingResult ->
