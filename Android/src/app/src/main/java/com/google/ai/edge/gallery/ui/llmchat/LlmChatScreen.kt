@@ -327,13 +327,7 @@ fun ChatViewWrapper(
             model = model,
             viewModel = viewModel,
             onError = { errorMessage ->
-              viewModel.handleError(
-                context = context,
-                task = task,
-                model = model,
-                errorMessage = errorMessage,
-                modelManagerViewModel = modelManagerViewModel,
-              )
+              viewModel.reportVoiceError(model = model, message = errorMessage)
             },
           )
         }

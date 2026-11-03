@@ -75,6 +75,15 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     voicePlayback.configure(context.applicationContext)
   }
 
+  /**
+   * An ASR, TTS, microphone or audio-focus failure is not evidence that
+   * the GGUF model itself is corrupt. Do not unload/reload model weights.
+   */
+  fun reportVoiceError(model: Model, message: String) {
+    Log.w(TAG, "Recoverable voice error for ${model.name}: $message")
+    addMessage(model = model, message = ChatMessageError(content = message))
+  }
+
 
   private val _currentSystemPrompt = MutableStateFlow("")
   val currentSystemPrompt: StateFlow<String> = _currentSystemPrompt.asStateFlow()
@@ -290,7 +299,23 @@ open class LlmChatViewModelBase() : ChatViewModel() {
         var voiceRequested = false
         if (voiceEngine != null) {
           require(audioClips.size == 1) { "Record one voice clip per turn" }
-          val transcript = voiceEngine.transcribeWav(audioClips.single())
+          val transcript = try {
+            voiceEngine.transcribeWav(audioClips.single())
+          } catch (cancelled: CancellationException) {
+            throw cancelled
+          } catch (error: Exception) {
+            if (requestEpoch.get() == epoch) {
+              withContext(Dispatchers.Main) {
+                if (getLastMessage(model = model)?.type == ChatMessageType.LOADING) {
+                  removeLastMessage(model = model)
+                }
+                setPreparing(false)
+                setInProgress(false)
+                reportVoiceError(model, error.message ?: "Η αναγνώριση ομιλίας απέτυχε")
+              }
+            }
+            return@launch
+          }
           if (requestEpoch.get() != epoch) return@launch
           if (getLastMessage(model = model)?.type == ChatMessageType.LOADING) {
             removeLastMessage(model = model)
@@ -458,7 +483,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                           setPreparing(false)
                           setInProgress(false)
                           onDone()
-                          onError(e.message ?: "Greek speech could not be generated")
+                          reportVoiceError(model, e.message ?: "Η σύνθεση φωνής απέτυχε")
                         }
                       }
                     }
