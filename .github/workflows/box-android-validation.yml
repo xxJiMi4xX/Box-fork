@@ -74,8 +74,22 @@ jobs:
           if [ -d /usr/include/vk_video ]; then
             cp -a /usr/include/vk_video "$RUNNER_TEMP/box-vulkan-headers/"
           fi
+          # SPIRV-Headers is another host-only header tree. Android's NDK
+          # cross-compiler must see it explicitly; package discovery alone
+          # provides CMake metadata, not compiler -I flags.
+          test -s /usr/include/spirv/unified1/spirv.hpp
+          cp -a /usr/include/spirv "$RUNNER_TEMP/box-vulkan-headers/"
           test -s "$RUNNER_TEMP/box-vulkan-headers/vulkan/vulkan.hpp"
+          test -s "$RUNNER_TEMP/box-vulkan-headers/spirv/unified1/spirv.hpp"
           echo "BOX_VULKAN_HEADERS_DIR=$RUNNER_TEMP/box-vulkan-headers" >> "$GITHUB_ENV"
+
+          # Fast Android cross-compilation smoke test for full public include
+          # closure. Avoid a costly 800+ unit native build if any SDK header
+          # still cannot be resolved.
+          NDK_CLANG="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang++"
+          printf '#include <vulkan/vulkan.hpp>\n#include <spirv/unified1/spirv.hpp>\nint main() { return 0; }\n' |
+            "$NDK_CLANG" -std=c++17 -fsyntax-only -x c++ - \
+              -isystem "$RUNNER_TEMP/box-vulkan-headers"
 
       - name: Check bundled MediaTek LiteRT NPU libraries
         shell: bash
