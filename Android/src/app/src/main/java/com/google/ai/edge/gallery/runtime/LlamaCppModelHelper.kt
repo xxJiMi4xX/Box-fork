@@ -56,7 +56,7 @@ object LlamaCppModelHelper : LlmModelHelper {
             temperature = temperature,
             topP = topP,
             topK = topK,
-            numThreads = Runtime.getRuntime().availableProcessors().coerceAtMost(8),
+            numThreads = VoiceGgufRuntimeSettings.cpuThreads(context, modelPath),
             mmprojPath = projector,
         )
 
