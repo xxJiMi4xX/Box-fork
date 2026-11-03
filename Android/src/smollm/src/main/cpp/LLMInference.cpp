@@ -182,6 +182,7 @@ void LLMInference::startCompletion(const char *query) {
                 formatted += "<|im_start|>";
                 formatted += message.first;
                 formatted += "\n";
+                if (message.first == "assistant") formatted += "<think></think>";
                 formatted += message.second;
                 formatted += "<|im_end|>\n";
             }
@@ -435,6 +436,8 @@ std::vector<uint8_t> LLMInference::synthesizeSpeech(const std::string &text) {
         throw std::runtime_error("Audio synthesis requires a compatible mmproj GGUF");
     if (generating_ || text.empty() || text.size() > 16384)
         throw std::runtime_error("Speech generation unavailable or input too long");
+    if (text.find("<|") != std::string::npos)
+        throw std::invalid_argument("TTS text contains reserved LFM3 control tokens");
     // The model's tokenizer.chat_template.tts is verified at loadModel().
     // Its LFM3-specific Jinja evaluates to precisely this sequence for
     // language="el", voice="female" and messages[0].content=text.

@@ -13,7 +13,7 @@ class SmolLM {
         init { System.loadLibrary("smollm") }
     }
 
-    private var nativePtr = 0L
+    @Volatile private var nativePtr = 0L
 
     data class InferenceParams(
         val minP: Float = 0.1f,
