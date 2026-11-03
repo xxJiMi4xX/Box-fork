@@ -1,0 +1,78 @@
+name: Box Android baseline validation
+
+on:
+  push:
+    branches: [feature/lfm3-omni-android]
+    paths:
+      - "Android/**"
+      - ".gitmodules"
+      - ".github/workflows/box-android-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: box-android-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+
+    steps:
+      - name: Checkout fork including pinned upstream submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Record source revisions
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          git submodule status
+          grep -E '^(agp|kotlin|litertlm) =' Android/src/gradle/libs.versions.toml
+          grep 'distributionUrl=' Android/src/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Install JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Android SDK, NDK and CMake
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+          sdk="$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/sdkmanager' -type f | sort -V | tail -n1)"
+          test -n "$sdk"
+          yes | "$sdk" --sdk_root="$ANDROID_HOME" --licenses > /dev/null || true
+          "$sdk" --sdk_root="$ANDROID_HOME" --install \
+            "platform-tools" \
+            "platforms;android-37.2" \
+            "build-tools;36.0.0" \
+            "ndk;27.2.12479018" \
+            "cmake;3.22.1"
+          test -f "$ANDROID_HOME/ndk/27.2.12479018/source.properties"
+
+      - name: Build complete Box debug APK (including unchanged LiteRT-LM)
+        working-directory: Android/src
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew :app:assembleDebug --no-daemon --stacktrace --console=plain --max-workers=2
+
+      - name: Upload debug APK if build succeeds
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: box-omni-baseline-arm64-debug
+          path: Android/src/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
