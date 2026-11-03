@@ -61,3 +61,7 @@ AGENTS.md → docs/HANDOFF.md → docs/STATUS.md → docs/PLAN_NEXT_APK.md → d
 - `db2d756` — αλλαγή σε διαφορετικό explicit saved chat επαναφέρει τα σωστά UI μηνύματα, το session reset δημιουργεί νέο conversationId μετά από επιτυχία, τερματισμός reset έπειτα από 3 failures.
 - `add4e92` — sampler history περιλαμβάνει και prompt tokens, όχι μόνο generated.
 **Μόνο source commits.** Τα bugs/fixes είναι συγκεκριμένα αλλά **καμία λειτουργία από αυτά δεν έχει επαληθευτεί από build ή πραγματική συσκευή**. Η επόμενη μεγάλη τεχνική διαδρομή είναι model-native LFM3 voice (mtmd input και native gen_audio, Greek speech), μαζί με Vulkan GPU και ενιαία επιθεώρηση settings. Η release scope παραμένει `PLAN_NEXT_APK.md`; όχι ενδιάμεσο APK.
+
+## M3 — Native LFM3 audio code added, NOT VALIDATED (2026-11-03)
+
+Από M2 προχωρήσαμε σε `3dc71cc` (LFM3 model-native Greek TTS WAV via mtmd_helper_gen_audio, JNI/Kotlin), `be51aae` (WAV audio-input parsing via mtmd and text generation), `475face` (cancel speech χωρίς stateLock, release decoded video helper), `4cc3870` (αποθήκευση πραγματικών projector capability flags μετά τη φόρτωση). **Καμία από τις λειτουργίες δεν έχει μεταγλωττιστεί ή δοκιμαστεί στο Box APK.** Για ιστορικό και ΑΚΡΙΒΗ όρια/δοκιμές, διάβασε `docs/SPEECH_PIPELINE.md`. Το UI κρατά τις GGUF image/audio επιλογές μη διαθέσιμες μέχρι end-to-end validation. Επόμενο: voice session UI+WAV player, έλεγχος ChatML TTS template, ελληνικό input, εγκατάσταση/CI ως ένα integrated release, πραγματική Vulkan/NPU μέτρηση.

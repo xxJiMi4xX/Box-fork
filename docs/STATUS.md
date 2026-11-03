@@ -48,3 +48,7 @@
 ## Μ2: GGUF history / sampling / reset — source-only (2026-11-03)
 
 Commits `e208757`, `db2d756`, `add4e92`. Προστέθηκε μετάδοση UI/Room ιστορικού και system prompt προς GGUF native state στον κάθε γύρο, χρήση `llama_sampler_accept` σε prompt και generated tokens, σωστή εναλλαγή explicit saved conversation, νέα ταυτότητα αποθήκευσης μετά reset και ανώτατο όριο retry. Τα παραπάνω είναι **μη επαληθευμένα σε build/runtime**. Το τελευταίο πραγματικά εγκατεστημένο APK εξακολουθεί να είναι από το `a520dcbf`. GPU/NPU, Greek voice, image/audio και video δεν λειτουργούν ακόμη στην εφαρμογή.
+
+## M3 code status — native audio staged but **not** functional in released APK
+
+Commits `3dc71cc`, `be51aae`, `475face`, `4cc3870`: TTS WAV/audio-input mtmd JNI Kotlin adapters και projector capability reporting. **Δεν υπάρχει νέα δοκιμή compile, Android APK ή φωνητική συνεδρία UI.** Ειδικά η μορφοποίηση του TTS prompt χρειάζεται σύγκριση με το επιτυχημένο Termux /tts πριν χαρακτηριστεί συμβατή. Το GGUF UI ορθώς παραμένει text-only. Κίνδυνοι: πιθανές C++/Kotlin ασυμβατότητες, session state synchronization, διατήρηση audio transcript, ανώτατη διάρκεια/μέγεθος WAV και όρια μνήμης Poco. Βλ. `SPEECH_PIPELINE.md`.

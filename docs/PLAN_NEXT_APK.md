@@ -131,3 +131,10 @@ Branch: feature/gguf-v080-native. Baseline: CI #41660795505, runtime text GGUF �
 **Κατάσταση:** Στον GitHub κώδικα, **χωρίς build/CI, δοκιμή εγκατάστασης ή λειτουργικό έλεγχο**. Τα source commits με [skip ci] δεν είναι λόγος να δηλωθεί λειτουργική δυνατότητα. M1 χρειάζεται κώδικα/στατική επιθεώρηση, αργότερα μία ενιαία υποψήφια έκδοση και device tests, όχι μεμονωμένο APK.
 
 **Συνέχεια M2:** Διορθώσεις model-specific template, native session history/system prompt, πραγματικό capability validation μετά τη φόρτωση mmproj, και σχεδίαση σταθερής audio bridge με αναφορά pinned llama-server. Μ2 δεν σημαίνει άδεια πρόωρου build.
+
+## M3 implementation progress / required integrated dependencies (2026-11-03)
+
+- Source-only: `3dc71cc` model-native LFM3 Greek TTS; `be51aae` WAV → `mtmd` audio input → GGUF text; `475face` cancel/resources; `4cc3870` loaded projector capabilities. Πάντα CPU-only/χωρίς end-to-end verification.
+- **Δεν επιτρέπεται** να ενεργοποιηθεί το GGUF Support Audio checkbox μόνο επειδή τα JNI symbols προστέθηκαν.
+- Εξαρτήσεις πριν από επόμενο υποψήφιο APK: Android audio session controller, playback, permission/focus, VAD, interruptions, εξαγωγή/αποθήκευση ελληνικής απομαγνητοφώνησης, σαφή state transitions, ασφάλεια και persistence.
+- Ο ενδεικτικός επιμέρους προϋπολογισμός native audio verification είναι **14 ώρες** (2 compile, 3 Greek TTS, 3 audio ASR, 2 cancellation/resource, 4 end-to-end loop), εντός του συνολικού 152–268 ανθρωποωρών. Όχι ξεχωριστό APK. Αναλυτικές native διαδρομές: `SPEECH_PIPELINE.md`.

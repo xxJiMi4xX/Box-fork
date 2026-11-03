@@ -51,3 +51,13 @@
 - [ ] Failure test reset όταν backend δεν είναι loaded: χωρίς ατέρμονο spinner, διατήρηση ιστορικού και καταγραφή σφάλματος. **1 ώρα**.
 
 Οι 6 ώρες περιλαμβάνονται στον προϋπολογισμό QA του `PLAN_NEXT_APK.md` και δεν αυξάνουν το σύνολο. Όλα τα παραπάνω είναι **εκκρεμή** και όχι περασμένα τεστ.
+
+## M3 audio acceptance gates (budget = 14 hours, ήδη μέσα στο R1)
+
+- [ ] 2 ώρες: GGUF+mmproj source/JNI/NDK compile και ABI compatibility σε integrated candidate.
+- [ ] 3 ώρες: «Perform TTS in Greek using a female voice.» πραγματικό LFM3 output WAV 24kHz, κατανοητή ελληνική ομιλία, template equivalence με Termux /tts.
+- [ ] 3 ώρες: δεδομένα από μικρόφωνο WAV → mtmd → σωστές ελληνικές text replies με ελεγχόμενο input.
+- [ ] 2 ώρες: abort long speech, invalid mmproj/audio, repeated load/unload και χαμηλή μνήμη χωρίς crash/leak.
+- [ ] 4 ώρες: UI voice session πολλαπλών γύρων, προστασία διπλής εγγραφής ιστορικού, σωστό mute/stop/playback.
+
+**Δεν έχει περαστεί κανένα gate.** Σημερινά commits είναι μόνο source, χωρίς νέα έκδοση APK ή πραγματικό TTS test.

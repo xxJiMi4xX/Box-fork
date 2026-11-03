@@ -92,3 +92,10 @@
 - `LlmChatViewModel.resetSession`: bounded retries, έπειτα επιτυχημένο reset νέο DB conversation ID, ορατή αποτυχία αντί άπειρου loading.
 - `omni_native.cpp`: `llama_sampler_accept` για prompt/generated tokens προκειμένου να δουλεύει η ακολουθία sampler penalties.
 - **Όλα εκκρεμούν για πραγματικό compile, integration tests και συσκευή.** Σημαντικό υπόλοιπο: απροστάτευτη ταυτόχρονη εγγραφή Room κοντά σε reset, πραγματική μέτρηση prompt tokens, concurrency lifecycle και stress με μεγάλα history.
+
+## M3 native audio audit (source-only)
+
+- `SmolLM.synthesizeSpeech` / `LlamaCppEngine.synthesizeSpeech` → JNI `Inference::synthesizeSpeech`, `mtmd_helper::gen_audio`, WAV result. **UI entrypoint/audio player: δεν υπάρχουν ακόμη.**
+- `LlamaCppModelHelper.runInference(audioClips.singleOrNull())` → `SmolLM.startCompletionAudio` → WAV bytes → mtmd bitmap → tokenize/eval chunks → token streaming. **GGUF Import capabilities flag για audio παραμένει OFF** για αποφυγή ψευδών claims.
+- Native projector flags από `loadProjector` διατηρούνται ως `LlamaCppEngine.loadedProjectorCapabilities`. Είναι μόνο ανίχνευση δυνατοτήτων· όχι proof μίας ολοκληρωμένης audio exchange.
+- Η ελληνική ASR/TTS εμπειρία στο Termux παραμένει σημαντική αλλά διαφορετική από την ανεπιβεβαίωτη υλοποίηση αυτού του fork.

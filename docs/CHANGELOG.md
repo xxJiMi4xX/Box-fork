@@ -72,3 +72,12 @@
 - **Commit [add4e92](https://github.com/xxJiMi4xX/Box-fork/commit/add4e92e2ef1057777e7d1bb7ec135a2338e93ee):** προφόρτωση sampler repeat-penalty history με τα prompt tokens πριν αρχίσει το decode, εκτός από τα generated tokens.
 - **Επαλήθευση:** ΠΡΟΣΟΧΗ, μόνο πηγαίος κώδικας και στατική αντιπαραβολή με το pinned llama.cpp API (llama_sampler_accept, llama_memory_clear, llama_get_memory). **Χωρίς compile, CI, APK, πραγματική εκτέλεση ή benchmark.**
 - **Παραμένουσες αβεβαιότητες:** διερεύνηση chat-template LFM3 στον πραγματικό native decoder, concurrency/cancellation κατά φόρτωση και επαναφορά, δυνατότητα σφάλματος από ανολοκλήρωτα μηνύματα στη βάση, περιβάλλον GPU/NPU. Native image/audio και Greek Voice Conversation δεν έχουν υλοποιηθεί.
+
+## 2026-11-03 — Milestone M3 / Native audio source bridge, χωρίς APK
+
+- `3dc71cc`: νέα native LFM3-Audio TTS με `mtmd-helper`, Greek/female ή male prompt, bounded output WAV, JNI `synthesizeSpeechNative`, Kotlin `SmolLM.synthesizeSpeech` / `LlamaCppEngine.synthesizeSpeech`.
+- `be51aae`: νέο JNI `startCompletionAudio`, φορτώνει 1 WAV μέσω `mtmd_helper_bitmap_init_from_buf`, περνά τα audio embeddings μέσω `mtmd_tokenize` και `mtmd_helper_eval_chunks`, μετά το GGUF text completion. Αρχικά 16 MiB input cap. Κρατά τα GGUF audio UI flags OFF μέχρι πραγματική επικύρωση.
+- `475face`: `stopSpeech` μεταφέρει native atomic abort χωρίς να μπλοκάρει στο Kotlin stateLock, και χειρισμός επιπλέον video_ctx από helper.
+- `4cc3870`: αποθήκευση των native `ProjectorCapabilities` μετά τη φόρτωση στο `LlamaCppEngine`, καθαρισμός στις αποτυχίες/unload· τα capabilities δεν είναι ακόμη πραγματική απόδειξη end-to-end media.
+- **Source only, uncompiled, untested.** Δεν προστέθηκε νέο APK ούτε χορηγήθηκε πρόσβαση σε μικρόφωνο στην app UI.
+- Δες `SPEECH_PIPELINE.md` για αναλυτικό αρχιτεκτονικό σχέδιο, γνωστούς περιορισμούς και προϋπολογισμό δοκιμών.
