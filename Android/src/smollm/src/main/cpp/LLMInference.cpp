@@ -114,15 +114,18 @@ void LLMInference::loadModel(const char *path, float minP, float temperature, fl
 std::vector<llama_token> LLMInference::tokenize(const std::string &str) {
     if (str.size() > static_cast<size_t>(INT32_MAX)) throw std::length_error("Prompt too large");
     auto *vocab = llama_model_get_vocab(model_);
+    // LFM3's formatted prompt already contains the <|startoftext|> token.
+    // Do not insert an additional BOS (the GGUF declares add_bos_token=false).
+    const bool addSpecial = !isLfm3_;
     int32_t needed = llama_tokenize(vocab, str.c_str(), static_cast<int32_t>(str.size()),
-                                    nullptr, 0, true, true);
+                                    nullptr, 0, addSpecial, true);
     if (needed == INT32_MIN) throw std::runtime_error("Token count overflow");
     if (needed == 0) return {};
     size_t cap = static_cast<size_t>(std::abs(needed));
     if (cap > 1048576) throw std::runtime_error("Prompt token limit exceeded");
     std::vector<llama_token> tokens(cap);
     int32_t count = llama_tokenize(vocab, str.c_str(), static_cast<int32_t>(str.size()),
-                                   tokens.data(), static_cast<int32_t>(tokens.size()), true, true);
+                                   tokens.data(), static_cast<int32_t>(tokens.size()), addSpecial, true);
     if (count < 0 || static_cast<size_t>(count) > tokens.size())
         throw std::runtime_error("llama_tokenize failed");
     tokens.resize(static_cast<size_t>(count));
@@ -475,18 +478,27 @@ std::vector<uint8_t> LLMInference::synthesizeSpeech(const std::string &text) {
         if (left < 0) throw std::runtime_error("Speech prompt encoding failed");
         if (left == 0) break;
     }
+    // Match upstream llama.cpp TTS's discrete sampling protocol. LFM3's
+    // audio mode consumes the hidden-state embedding and ignores this token.
     llama_token semantic = llama_sampler_sample(sampler_, context_, -1);
+    llama_sampler_accept(sampler_, semantic);
     const float *hidden = llama_get_embeddings_ith(context_, -1);
+    if (!hidden) throw std::runtime_error("Speech decoder returned no hidden state");
     bool done = false;
     for (int frames = 0; frames < 512 && !done; ++frames) {
         if (stopRequested_.load()) throw std::runtime_error("Speech generation cancelled");
         const float *nextHidden = nullptr;
         if (mtmd_helper_gen_audio_step_gen(gen, semantic, hidden, &nextHidden, &done) != 0)
             throw std::runtime_error("Audio codec generation failed");
-        if (!nextHidden) break;
+        if (!nextHidden) {
+            if (!done) throw std::runtime_error("Speech decoder stopped without EOS");
+            break;
+        }
         hidden = nextHidden;
         semantic = llama_sampler_sample(sampler_, context_, -1);
+        llama_sampler_accept(sampler_, semantic);
     }
+    if (stopRequested_.load()) throw std::runtime_error("Speech generation cancelled");
     int32_t rate = 0;
     const char *bytes = nullptr;
     size_t size = 0;
