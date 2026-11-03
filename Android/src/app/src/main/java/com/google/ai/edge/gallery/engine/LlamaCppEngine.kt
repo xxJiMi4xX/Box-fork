@@ -100,14 +100,16 @@ class LlamaCppEngine {
                 throw error
             } catch (error: Exception) {
                 withContext(Dispatchers.Main) {
-                    isModelLoaded.set(false)
-                    onError(error)
+                    if (lifecycleEpoch.get() == epoch) {
+                        isModelLoaded.set(false)
+                        onError(error)
+                    }
                 }
             }
         }
     }
 
-    fun unloadModel() {
+    fun unloadModel(onDone: () -> Unit = {}) {
         stopGeneration()
         loadJob?.cancel()
         lifecycleEpoch.incrementAndGet()
@@ -116,9 +118,13 @@ class LlamaCppEngine {
         // the native mutex. A subsequent model load cannot be closed by this job.
         val previous = instance
         scope.launch(Dispatchers.IO) {
-            nativeMutex.withLock {
-                previous.close()
-                if (instance === previous) instance = SmolLM()
+            try {
+                nativeMutex.withLock {
+                    previous.close()
+                    if (instance === previous) instance = SmolLM()
+                }
+            } finally {
+                withContext(NonCancellable + Dispatchers.Main) { onDone() }
             }
         }
     }

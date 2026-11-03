@@ -14,6 +14,7 @@ import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ToolProvider
 import com.jegly.offlineLLM.smollm.SmolLM
 import kotlinx.coroutines.CoroutineScope
+import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "BoxLlamaCppModelHelper"
 
@@ -24,7 +25,7 @@ private const val TAG = "BoxLlamaCppModelHelper"
 object LlamaCppModelHelper : LlmModelHelper {
 
     // Indexed by model name
-    private val engines: MutableMap<String, LlamaCppEngine> = mutableMapOf()
+    private val engines = ConcurrentHashMap<String, LlamaCppEngine>()
 
     override fun initialize(
         context: Context,
@@ -47,7 +48,7 @@ object LlamaCppModelHelper : LlmModelHelper {
         Log.d(TAG, "Initializing llama.cpp engine for: $modelPath")
 
         val engine = LlamaCppEngine()
-        engines[model.name] = engine
+        engines.put(model.name, engine)?.unloadModel()
 
         val projector = GgufAudioFiles.findProjector(context, modelPath)
         Log.d(TAG, "Selected GGUF mmproj: ${projector ?: "not installed"}")
@@ -63,13 +64,18 @@ object LlamaCppModelHelper : LlmModelHelper {
             modelPath = modelPath,
             params = params,
             onSuccess = {
-                // Store a marker so the ViewModel knows the model is ready
-                model.instance = engine
-                onDone("")
+                if (engines[model.name] === engine) {
+                    model.instance = engine
+                    onDone("")
+                } else {
+                    engine.unloadModel()
+                }
             },
             onError = { e ->
-                Log.e(TAG, "Failed to load GGUF model", e)
-                onDone(e.message ?: "Failed to load GGUF model")
+                if (engines[model.name] === engine) {
+                    Log.e(TAG, "Failed to load GGUF model", e)
+                    onDone(e.message ?: "Failed to load GGUF model")
+                }
             }
         )
     }
@@ -92,9 +98,10 @@ object LlamaCppModelHelper : LlmModelHelper {
             params = engine.lastLoadParams ?: SmolLM.InferenceParams(),
             systemPrompt = engine.lastSystemPrompt,
             onSuccess = {
-                // Update model instance reference
-                model.instance = engine
-                Log.d(TAG, "Conversation reset complete for ${model.name}")
+                if (engines[model.name] === engine) {
+                    model.instance = engine
+                    Log.d(TAG, "Conversation reset complete for ${model.name}")
+                }
             },
             onError = { e ->
                 Log.e(TAG, "Failed to reset conversation for ${model.name}", e)
@@ -104,10 +111,15 @@ object LlamaCppModelHelper : LlmModelHelper {
 
     override fun cleanUp(model: Model, onDone: () -> Unit) {
         val engine = engines.remove(model.name)
-        engine?.unloadModel()
         model.instance = null
-        onDone()
-        Log.d(TAG, "Clean up done for ${model.name}")
+        if (engine == null) {
+            onDone()
+            return
+        }
+        engine.unloadModel(onDone = {
+            Log.d(TAG, "Clean up done for ${model.name}")
+            onDone()
+        })
     }
 
     override fun stopResponse(model: Model) {
