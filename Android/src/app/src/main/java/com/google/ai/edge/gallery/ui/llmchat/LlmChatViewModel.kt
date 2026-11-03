@@ -73,6 +73,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
   // Model-scoped session IDs: never share one Room conversation among models.
   private val conversationIds = ConcurrentHashMap<String, String>()
   @Volatile private var selectedConversationModel: String = ""
+  @Volatile private var selectedConversationModelObject: Model? = null
   private val conversationMutex = Mutex()
   private var lastCommitJob: Job? = null
   private val historyGates = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
@@ -106,15 +107,37 @@ open class LlmChatViewModelBase() : ChatViewModel() {
 
   fun updateSystemPrompt(prompt: String) {
     _currentSystemPrompt.value = prompt
-    val modelName = selectedConversationModel
-    val convId = conversationIds[modelName] ?: return
+    val model = selectedConversationModelObject ?: return
+    val modelName = model.name
+    val convId = conversationIds[modelName]
+    val gguf = model.instance is LlamaCppEngine
+    if (gguf) {
+      // A newly edited system instruction must take effect in the native
+      // prompt, not merely in the UI/Room metadata.
+      beginHistorySynchronization(model)
+      stopResponse(model)
+    }
     viewModelScope.launch(Dispatchers.IO) {
+      var errorMessage: String? = null
       try {
-        val conv = chatRepository.getConversationById(convId) ?: return@launch
-        if (conv.modelName != modelName) return@launch
-        chatRepository.updateConversation(conv.copy(systemPrompt = prompt))
-      } catch (e: Exception) {
-        Log.e(TAG, "Failed to persist system prompt", e)
+        lastCommitJob?.join()
+        if (convId != null) {
+          val conv = chatRepository.getConversationById(convId)
+            ?: throw IllegalStateException("Η συνομιλία δεν υπάρχει πλέον")
+          check(conv.modelName == modelName) { "Η συνομιλία ανήκει σε άλλο μοντέλο" }
+          chatRepository.updateConversation(conv.copy(systemPrompt = prompt))
+        }
+        if (gguf) {
+          val rows = if (convId != null) chatRepository.getMessagesSync(convId) else emptyList()
+          restoreGgufHistory(model, prompt, rows.map { it.role to it.content })
+        }
+      } catch (cancelled: CancellationException) {
+        throw cancelled
+      } catch (error: Exception) {
+        errorMessage = error.message ?: "Αδυναμία εφαρμογής system prompt"
+        Log.e(TAG, "Failed to apply system prompt", error)
+      } finally {
+        if (gguf) endHistorySynchronization(model, errorMessage)
       }
     }
   }
@@ -125,13 +148,15 @@ open class LlmChatViewModelBase() : ChatViewModel() {
   /**
    * Box: Set the current conversation ID for continuing an existing conversation
    */
-  fun setCurrentConversationModel(modelName: String) {
-    selectedConversationModel = modelName
+  fun setCurrentConversationModel(model: Model) {
+    selectedConversationModel = model.name
+    selectedConversationModelObject = model
   }
 
   fun setCurrentConversationId(model: Model, conversationId: String) {
     conversationIds[model.name] = conversationId
     selectedConversationModel = model.name
+    selectedConversationModelObject = model
   }
 
   fun beginNewConversation(model: Model) {
