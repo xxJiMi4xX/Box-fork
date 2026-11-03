@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+struct mtmd_helper_gen_audio;
+
 class LLMInference {
 public:
     LLMInference() = default;
@@ -36,6 +38,15 @@ public:
     std::string transcribeAudio(const std::vector<float> &pcm);
     std::vector<uint8_t> synthesizeSpeech(const std::string &text);
 
+    struct MixedStep {
+        std::string text;
+        std::vector<uint8_t> pcm16;
+        int sampleRate = 0;
+        bool done = false;
+    };
+    void startMixedCompletion(const char *query);
+    MixedStep mixedCompletionLoop();
+
 private:
     std::mutex mutex_;
     std::atomic<bool> stopRequested_{false};
@@ -43,6 +54,8 @@ private:
     llama_context *context_ = nullptr;
     llama_sampler *sampler_ = nullptr;
     mtmd_context *mmproj_ = nullptr;
+    mtmd_helper_gen_audio *mixedGen_ = nullptr;
+    std::vector<float> mixedHidden_;
     std::string ttsTemplate_;
     int audioCapabilities_ = 0;
     std::vector<std::pair<std::string,std::string>> beforeGeneration_;
