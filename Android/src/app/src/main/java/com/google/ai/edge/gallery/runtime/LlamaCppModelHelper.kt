@@ -88,13 +88,9 @@ object LlamaCppModelHelper : LlmModelHelper {
         enableConversationConstrainedDecoding: Boolean,
     ) {
         val engine = engines[model.name] ?: return
-        val modelPath = engine.lastModelPath ?: return
-
         Log.d(TAG, "Resetting conversation for ${model.name} (keeping model loaded)")
 
         engine.resetConversation(
-            modelPath = modelPath,
-            params = engine.lastLoadParams ?: SmolLM.InferenceParams(),
             systemPrompt = engine.lastSystemPrompt,
             onSuccess = {
                 // Update model instance reference

@@ -115,14 +115,11 @@ class LlamaCppEngine {
     }
 
     /**
-     * Box: Reset conversation while keeping the model loaded.
-     * Closes the current llama.cpp context and re-opens with the same params.
-     * This clears the KV cache and chat history without reloading weights from disk.
+     * Clears native conversation state while keeping model weights and projector loaded.
+     * The JNI lock serializes reset against an in-flight decode.
      */
     fun resetConversation(
-        modelPath: String,
-        params: SmolLM.InferenceParams = lastLoadParams ?: SmolLM.InferenceParams(),
-        systemPrompt: String = "",
+        systemPrompt: String = lastSystemPrompt,
         onSuccess: () -> Unit = {},
         onError: (Exception) -> Unit = {},
     ) {
@@ -130,32 +127,17 @@ class LlamaCppEngine {
             generationJob?.cancel()
             instance.interruptGeneration()
             isGenerating = false
-
             CoroutineScope(Dispatchers.Default).launch {
                 try {
-                    // Close and reopen — this clears the KV cache and message history
-                    // but the OS keeps model pages in memory so reload is fast
-                    instance.close()
-                    instance = SmolLM()
-                    instance.load(modelPath, params)
-                    params.projectorPath?.let { projectorPath ->
-                        val caps = instance.loadProjector(projectorPath)
-                        android.util.Log.i(
-                            "BoxOmni",
-                            "Projector loaded: audioInput=${caps.audioInput}, imageInput=${caps.imageInput}, audioOutput=${caps.audioOutput}"
-                        )
-                    }
-
+                    instance.resetSession()
                     if (systemPrompt.isNotBlank()) {
                         instance.addSystemPrompt(systemPrompt)
                     }
-
-                    isModelLoaded.set(true)
+                    lastSystemPrompt = systemPrompt
                     withContext(Dispatchers.Main) { onSuccess() }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    isModelLoaded.set(false)
                     withContext(Dispatchers.Main) { onError(e) }
                 }
             }

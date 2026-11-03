@@ -96,6 +96,11 @@ class SmolLM {
         addChatMessage(nativePtr, message, role)
     }
 
+    fun resetSession() {
+        verifyHandle()
+        resetSessionNative(nativePtr)
+    }
+
     fun addUserMessage(message: String) {
         addChatMessage("user", message)
     }
@@ -182,6 +187,7 @@ class SmolLM {
 
     private external fun loadProjectorNative(modelPtr: Long, mmprojPath: String): IntArray
     private external fun addChatMessage(modelPtr: Long, message: String, role: String)
+    private external fun resetSessionNative(modelPtr: Long)
     private external fun getResponseGenerationSpeed(modelPtr: Long): Float
     private external fun getContextSizeUsed(modelPtr: Long): Int
     private external fun close(modelPtr: Long)

@@ -201,6 +201,25 @@ public:
         return capabilities;
     }
 
+    void resetSession() {
+        std::lock_guard<std::mutex> guard(mutex_);
+        cancelled_.store(true, std::memory_order_release);
+        generationActive_ = false;
+        turnStored_ = false;
+        messages_.clear();
+        response_.clear();
+        utf8Pending_.clear();
+        generated_ = 0;
+        decodedPosition_ = 0;
+        elapsedUs_ = 0;
+        hasPendingToken_ = false;
+        hasLogits_ = false;
+        pendingToken_ = LLAMA_TOKEN_NULL;
+        llama_memory_clear(llama_get_memory(context_.get()), false);
+        llama_sampler_reset(sampler_.get());
+        cancelled_.store(false, std::memory_order_release);
+    }
+
     void addMessage(const std::string & role, const std::string & text) {
         std::lock_guard<std::mutex> guard(mutex_);
         if (generationActive_) throw std::runtime_error("Cannot edit conversation during generation");
@@ -453,6 +472,12 @@ Java_com_jegly_offlineLLM_smollm_SmolLM_loadProjectorNative(
                                reinterpret_cast<const jint *>(capabilities.data()));
     });
     return output;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_jegly_offlineLLM_smollm_SmolLM_resetSessionNative(
+    JNIEnv * env, jobject, jlong handle) {
+    invokeVoid(env, [&] { lookup(handle)->resetSession(); });
 }
 
 extern "C" JNIEXPORT void JNICALL
