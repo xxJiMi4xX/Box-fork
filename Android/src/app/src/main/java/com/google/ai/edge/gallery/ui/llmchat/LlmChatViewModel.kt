@@ -260,36 +260,6 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     }
   }
 
-  /**
-   * Feed bounded, natural sentence/phrase chunks to the GGUF speech decoder.
-   * Playback of the first chunk begins while later chunks are still pending.
-   * This is not simultaneous text-token/audio generation.
-   */
-  private fun segmentSpeech(text: String, limit: Int = 200): List<String> {
-    require(limit in 80..512)
-    val pieces = mutableListOf<String>()
-    var remaining = text.trim()
-    while (remaining.isNotEmpty()) {
-      if (remaining.length <= limit) {
-        pieces += remaining
-        break
-      }
-      val candidate = remaining.substring(0, limit)
-      val punctuation = candidate.indexOfLast { it == '.' || it == '!' ||
-        it == '?' || it == ';' || it == '\n' }
-      val whitespace = candidate.indexOfLast { it.isWhitespace() }
-      val boundary = when {
-        punctuation >= limit / 3 -> punctuation + 1
-        whitespace >= limit / 3 -> whitespace + 1
-        else -> limit
-      }
-      val segment = remaining.substring(0, boundary).trim()
-      if (segment.isNotEmpty()) pieces += segment
-      remaining = remaining.substring(boundary).trimStart()
-    }
-    return pieces
-  }
-
   private suspend fun requireHistoryReady(model: Model) {
     while (true) {
       val gate = historyGates[model.name] ?: break
@@ -739,7 +709,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                     try {
                       val accumulated = ByteArrayOutputStream()
                       var clipRate = 0
-                      val pieces = segmentSpeech(spokenAnswer)
+                      val pieces = VoiceTextSegments.split(spokenAnswer)
                       require(pieces.isNotEmpty()) { "Η φωνητική απάντηση είναι κενή" }
                       for (piece in pieces) {
                         kotlinx.coroutines.currentCoroutineContext().ensureActive()
