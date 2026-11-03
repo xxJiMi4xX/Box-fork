@@ -20,10 +20,8 @@ extensions.configure<com.android.build.api.dsl.LibraryExtension>("android") {
                 cppFlags += listOf()
                 arguments += listOf("-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON")
                 arguments += "-DCMAKE_BUILD_TYPE=Release"
-                arguments += "-DBUILD_SHARED_LIBS=ON"
-                arguments += "-DLLAMA_BUILD_COMMON=ON"
                 arguments += "-DLLAMA_CURL=OFF"
-                arguments += "-DGGML_LLAMAFILE=OFF"
+                arguments += "-DGGML_NATIVE=OFF"
             }
         }
     }
