@@ -6,6 +6,9 @@ import java.io.File
 import java.io.IOException
 import java.nio.charset.StandardCharsets
 import java.util.UUID
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.nio.file.AtomicMoveNotSupportedException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -57,11 +60,19 @@ object GgufAudioFiles {
                         input.copyTo(output, 256 * 1024)
                     }
                 }
-                if (temporary.length() == 0L) throw IOException("The mmproj file is empty")
-                if (destination.exists() && !destination.delete())
-                    throw IOException("Cannot replace the old projector")
-                if (!temporary.renameTo(destination))
-                    throw IOException("Cannot finalize projector import")
+                if (temporary.length() < 32L) throw IOException("The selected mmproj is too small")
+                val header = ByteArray(4)
+                temporary.inputStream().use {
+                    if (it.read(header) != 4 || !header.contentEquals(byteArrayOf(71, 71, 85, 70)))
+                        throw IOException("Selected file is not a GGUF projector")
+                }
+                try {
+                    Files.move(temporary.toPath(), destination.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+                } catch (_: AtomicMoveNotSupportedException) {
+                    Files.move(temporary.toPath(), destination.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING)
+                }
                 destination.absolutePath
             } finally {
                 if (temporary.exists()) temporary.delete()

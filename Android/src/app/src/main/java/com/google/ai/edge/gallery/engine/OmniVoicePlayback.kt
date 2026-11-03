@@ -8,6 +8,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** Plays one synthesized voice answer at a time and can stop it immediately. */
 class OmniVoicePlayback {
@@ -59,9 +60,14 @@ class OmniVoicePlayback {
                 if (written <= 0) break
                 offset += written
             }
-            while (currentCoroutineContext().isActive &&
-                track.playbackHeadPosition.toLong() < wave.samples.toLong()) {
-                delay(30)
+            val maxPlaybackMs = (wave.samples.toLong() * 1000 / wave.sampleRate) + 5000L
+            withTimeoutOrNull(maxPlaybackMs) {
+                while (currentCoroutineContext().isActive &&
+                    synchronized(lock) { active === track } &&
+                    runCatching { track.playState == AudioTrack.PLAYSTATE_PLAYING }.getOrDefault(false) &&
+                    runCatching { track.playbackHeadPosition.toLong() < wave.samples.toLong() }.getOrDefault(false)) {
+                    delay(30)
+                }
             }
         } finally {
             synchronized(lock) { if (active === track) active = null }
