@@ -198,15 +198,18 @@ class LlamaCppEngine {
     suspend fun restoreConversation(
         systemPrompt: String,
         conversationHistory: List<Pair<String, String>>,
+        stillCurrent: () -> Boolean = { true },
     ): Int = withContext(Dispatchers.IO) {
         require(conversationHistory.all { (role, _) -> role == "user" || role == "assistant" }) {
             "Conversation contains an unsupported role"
         }
+        if (!stillCurrent()) return@withContext 0
         val epoch = lifecycleEpoch.get()
         stopGeneration()
         val current = generationJob
         current?.join()
         nativeMutex.withLock {
+            if (!stillCurrent()) return@withLock 0
             check(isModelLoaded.get() && epoch == lifecycleEpoch.get()) {
                 "Model changed before saved history could be restored"
             }
@@ -218,8 +221,8 @@ class LlamaCppEngine {
                 model.addChatMessage(role, content)
             }
             lastSystemPrompt = systemPrompt
+            conversationHistory.size
         }
-        conversationHistory.size
     }
 
     suspend fun transcribeWav(wav: ByteArray): String = withContext(Dispatchers.IO) {
