@@ -694,7 +694,19 @@ open class LlmChatViewModelBase() : ChatViewModel() {
             Log.e(TAG, "Error occurred while running inference: $message")
             setInProgress(false)
             setPreparing(false)
-            onError(message)
+            if (model.instance is LlamaCppEngine &&
+                (message.contains("context window", ignoreCase = true) ||
+                 message.contains("Latest turn is larger", ignoreCase = true))) {
+              // Native has already rolled this turn back. Do not reload the
+              // GGUF merely because the prompt/context limit was reached.
+              val last = getLastMessage(model = model)
+              if (last is ChatMessageText && last.side == ChatSide.AGENT) {
+                removeLastMessage(model = model)
+              }
+              reportVoiceError(model, message)
+            } else {
+              onError(message)
+            }
           }
         }
 
