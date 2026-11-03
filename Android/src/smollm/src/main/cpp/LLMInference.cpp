@@ -170,6 +170,24 @@ void LLMInference::startCompletion(const char *query) {
     }
     messages_.emplace_back("user", query);
     auto renderConversation = [&]() -> std::vector<llama_token> {
+        if (audioCapabilities_ == 3) {
+            // LFM3's native chat template includes BOS and an empty thinking
+            // section before every assistant answer. llama_chat_apply_template
+            // is a heuristic renderer and does not evaluate these Jinja blocks.
+            std::string formatted("<|startoftext|>");
+            for (const auto &message : messages_) {
+                if (message.first != "system" && message.first != "user" &&
+                    message.first != "assistant")
+                    throw std::invalid_argument("Unsupported LFM3 chat role");
+                formatted += "<|im_start|>";
+                formatted += message.first;
+                formatted += "\n";
+                formatted += message.second;
+                formatted += "<|im_end|>\n";
+            }
+            formatted += "<|im_start|>assistant\n<think></think>";
+            return tokenize(formatted);
+        }
         std::vector<llama_chat_message> chat;
         chat.reserve(messages_.size());
         for (const auto &m : messages_) chat.push_back({m.first.c_str(), m.second.c_str()});
@@ -358,27 +376,21 @@ std::string LLMInference::transcribeAudio(const std::vector<float> &pcm) {
         throw std::runtime_error("Audio busy, empty or longer than 90 seconds");
     stopRequested_.store(false);
 
-    const std::string sys = "Perform ASR in Greek.";
-    const std::string marker = mtmd_default_marker();
-    const llama_chat_message chat[] = {
-        {"system", sys.c_str()},
-        {"user", marker.c_str()}
-    };
-    int32_t required = llama_chat_apply_template(chatTemplate_.c_str(), chat, 2, true, nullptr, 0);
-    if (required <= 0 || required > 65536)
-        throw std::runtime_error("Cannot render the ASR chat template");
-    std::vector<char> rendered(static_cast<size_t>(required) + 1);
-    int32_t used = llama_chat_apply_template(chatTemplate_.c_str(), chat, 2, true,
-                                              rendered.data(), static_cast<int32_t>(rendered.size()));
-    if (used < 0 || used > required)
-        throw std::runtime_error("Cannot render ASR user prompt");
+    // ASR must use the actual LFM3 assistant prefix, not a generic
+    // ChatML heuristic that silently drops <think></think>.
+    std::string asrPrompt =
+        "<|startoftext|><|im_start|>system\n"
+        "Perform ASR in Greek.<|im_end|>\n"
+        "<|im_start|>user\n";
+    asrPrompt += mtmd_default_marker();
+    asrPrompt += "<|im_end|>\n<|im_start|>assistant\n<think></think>";
     mtmd_bitmap *bitmap = mtmd_bitmap_init_from_audio(pcm.size(), pcm.data());
     if (!bitmap) throw std::runtime_error("Cannot create audio bitmap");
     std::unique_ptr<mtmd_bitmap, decltype(&mtmd_bitmap_free)> bitmapHolder(bitmap, mtmd_bitmap_free);
     mtmd_input_chunks *chunks = mtmd_input_chunks_init();
     if (!chunks) throw std::runtime_error("Cannot allocate audio chunks");
     std::unique_ptr<mtmd_input_chunks, decltype(&mtmd_input_chunks_free)> chunkHolder(chunks, mtmd_input_chunks_free);
-    mtmd_input_text text = {rendered.data(), static_cast<size_t>(used), true, true};
+    mtmd_input_text text = {asrPrompt.c_str(), asrPrompt.size(), false, true};
     const mtmd_bitmap *ptr = bitmap;
     if (mtmd_tokenize(mmproj_, chunks, &text, &ptr, 1) != 0)
         throw std::runtime_error("Audio preprocessing failed");

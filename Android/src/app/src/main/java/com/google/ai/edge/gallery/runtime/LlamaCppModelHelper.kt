@@ -88,8 +88,10 @@ object LlamaCppModelHelper : LlmModelHelper {
         tools: List<ToolProvider>,
         enableConversationConstrainedDecoding: Boolean,
     ) {
-        val engine = engines[model.name] ?: return
-        val modelPath = engine.lastModelPath ?: return
+        val engine = engines[model.name]
+            ?: throw IllegalStateException("No loaded GGUF engine to reset")
+        val modelPath = engine.lastModelPath
+            ?: throw IllegalStateException("No loaded GGUF model path")
 
         Log.d(TAG, "Resetting conversation for ${model.name} (keeping model loaded)")
 
@@ -105,6 +107,7 @@ object LlamaCppModelHelper : LlmModelHelper {
             },
             onError = { e ->
                 Log.e(TAG, "Failed to reset conversation for ${model.name}", e)
+                throw e
             },
         )
     }
