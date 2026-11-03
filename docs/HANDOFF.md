@@ -37,3 +37,7 @@ Box Omni Android για Poco X6 Pro 5G, MediaTek Dimensity 8300 Ultra, Android 1
 ## Γρήγορος χάρτης
 AGENTS.md → docs/HANDOFF.md → docs/STATUS.md → docs/PLAN_NEXT_APK.md → docs/UI_BACKEND_AUDIT.md → docs/CHANGELOG.md → docs/DECISIONS.md → docs/RELEASE_PROTOCOL.md → docs/DEVICE_TESTS.md.
 Το docs/lfm3-omni-android-plan.md διατηρείται ως ιστορικό προηγούμενο σχέδιο, όχι ως μοναδική σημερινή αλήθεια.
+
+## Νεότερη απαίτηση: κανονική φωνητική συνομιλία (2026-11-03)
+
+Ο χρήστης θέλει dedicated voice mode όπως στο ChatGPT, δηλαδή διαδοχική αμφίδρομη συνομιλία με μικρόφωνο/απαντήσεις από ηχείο, όχι απλό Voice Input/Whisper. Audit: Category.VOICE περιλαμβάνει Whisper Voice Input για STT, υπάρχουν HoldToDictate/AudioRecorderPanel/AudioPlaybackPanel, **δεν** υπάρχει integrated conversational voice screen. Το GGUF απορρίπτει audio inputs και δεν παράγει ακόμη audio playback. Η πλήρης προσθήκη βρίσκεται στο `docs/PLAN_NEXT_APK.md` και η UI χαρτογράφηση στο `docs/UI_BACKEND_AUDIT.md`. Καμία νέα υλοποίηση ή APK μόνο από αυτόν τον έλεγχο.

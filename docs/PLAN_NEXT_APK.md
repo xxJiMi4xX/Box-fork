@@ -67,3 +67,17 @@ Branch: feature/gguf-v080-native. Baseline: CI #41660795505, runtime text GGUF �
 9. Ενημερωμένα STATUS, CHANGELOG, DEVICE_TESTS, HANDOFF, DECISIONS, release gate report.
 
 Αν κάποιο κρίσιμο gate αποτύχει, δεν χαρακτηρίζουμε τη λειτουργία επιτυχή. Το scope μπορεί να διορθωθεί **με καταγεγραμμένη απόφαση**, αντί να γίνει ψευδής δήλωση ή σιωπηρό fallback.
+
+## Προσθήκη ολοκληρωμένης λειτουργίας Voice Conversation (2026-11-03)
+
+Ο χρήστης ζήτησε **κανονική συνομιλία με φωνή**, όπως ChatGPT Voice, όχι μεμονωμένη απομαγνητοφώνηση.
+
+- Το νέο Voice Conversation UI να έχει ξεχωριστό entrypoint και μία συνεδρία: `Idle → Listening → Processing → Speaking → Listening`, καθώς και `Paused/Error/Ended`.
+- Ξεχωριστός συντονιστής audio session από την υπάρχουσα οθόνη Voice Input (Whisper), με Android permissions, audio focus, εξωτερικά ακουστικά, Bluetooth όπου επιτρέπεται, safety timeout, mute, stop, recovery.
+- Προτιμώμενη διαδρομή για πραγματικό LFM3-Omni: microphone PCM16 → συμβατό mmproj/mtmd audio encoder → LFM3 text/audio inference → native speech output/codec → Android AudioTrack. Αυτή η διαδρομή παραμένει **μη υλοποιημένη**.
+- Εναλλακτικό υποστηριζόμενο STT → LLM → TTS pipeline μόνο αν native speech generation δεν είναι εφικτό· το UI να εμφανίζει τη διαφορά και τα αντίστοιχα πραγματικά backends.
+- Διατήρηση της ίδιας συνεδρίας συνομιλίας, χωρίς διπλή καταχώριση στον chat history και χωρίς ανεξέλεγκτη επανεγγραφή prompt.
+- Voice Activity Detection, auto-turn, διακοπή αναπαραγωγής/barge-in, acoustic echo cancellation, αποφυγή ανατροφοδότησης μικροφώνου/ηχείου αποτελούν **ξεχωριστά acceptance gates**. Δεν τα παρουσιάζουμε ως ήδη υλοποιημένα.
+- Ελληνικά: ξεχωριστά tests εισερχόμενης ομιλίας, εξαγόμενου κειμένου, παραγόμενης ελληνικής φωνής, καθυστέρησης και σταθερότητας.
+- Ενδεικτικός επιπλέον προϋπολογισμός **Voice UI/session controller 8–14 ώρες**, **VAD/auto-turn/audio focus/barge-in 10–18 ώρες**, **end-to-end αξιολόγηση/παλινδρόμηση 6–10 ώρες**. **Σύνολο επιπλέον 24–42 ανθρωποώρες**, πέραν των ήδη εκτιμημένων native audio input/output εργασιών. **Αναθεωρημένο συνολικό πλαίσιο 128–216 ανθρωποώρες**, υπό την επιφύλαξη πραγματικής συμβατότητας του audio backend.
+- Απαραίτητο πριν δοθεί APK: αποδεδειγμένη τουλάχιστον turn-based φωνητική συνομιλία· auto-hands-free/barge-in μόνο αν τα επιμέρους device tests περάσουν. Αλλιώς η επιλογή εμφανίζεται ως beta με ακριβείς περιορισμούς ή παραμένει ανενεργή.

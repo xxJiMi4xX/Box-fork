@@ -30,3 +30,11 @@
 
 ## Υποχρεωτική φόρμα ιστορικού για κάθε επόμενη εργασία
 Ημερομηνία · σκοπός · σχετικό πλάνο · αρχεία/commit · CI run και status · συσκευή/μοντέλο · test inputs · αποτέλεσμα · error/αιτία · fix · τι απομένει · ενημέρωση handoff.
+
+## 2026-11-03 — Audit φωνητικής συνομιλίας
+
+- **Αίτημα:** αναζήτηση UI για κανονική διαδραστική συνομιλία φωνής σαν ChatGPT.
+- **Πηγαίος έλεγχος:** `data/Tasks.kt`, `data/Categories.kt`, `ui/whisper/WhisperTaskModule.kt`, `WhisperScreen.kt`, `textandvoiceinput/HoldToDictate.kt`, `HoldToDictateViewModel.kt`, `common/chat/MessageInputText.kt`, `AudioRecorderPanel.kt`, `AudioPlaybackPanel.kt`, `runtime/LlamaCppModelHelper.kt`.
+- **Εύρημα:** Voice tab = Whisper STT, hold-to-dictate = push-to-talk text, audio clips = recording/playback, χωρίς dedicated hands-free/full voice LLM conversation. GGUF media inference και speech output δεν είναι συνδεδεμένα.
+- **Απόφαση:** προσθήκη `Voice Conversation` ως ενιαίο μέρος επόμενου integrated APK scope, όχι ανεξάρτητο δοκιμαστικό APK. Πρόσθετος αναλυτικός προϋπολογισμός 24–42 ώρες για UI/session orchestration, VAD/barge-in/audio focus και tests (το native audio engineering ήδη προϋπολογισμένο).
+- **Αποτέλεσμα:** μόνο τεκμηρίωση, χωρίς runtime αλλαγή, CI build ή APK.

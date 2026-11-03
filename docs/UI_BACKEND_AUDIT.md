@@ -58,3 +58,16 @@
 
 ## Definition of done για κάθε control
 Καταγραφή (1) πότε φαίνεται, (2) τι αποθηκεύει, (3) τι validation κάνει, (4) ποιο runtime API καλεί, (5) τι εφαρμόστηκε πραγματικά, (6) fallback/error, (7) ελάχιστο automated + device test. Ακόμη και αν ένα παλιό feature δεν περιλαμβάνεται στο επόμενο release scope, δεν επιτρέπεται να εμφανίζεται ως verified χωρίς evidence.
+
+## Voice Conversation: UI inventory (2026-11-03)
+
+**Εύρημα:** Δεν υπάρχει dedicated, συνεχής αμφίδρομη φωνητική συνομιλία ή voice-call screen. Το `Category.VOICE` έχει task `WhisperTask` με τίτλο "Voice Input", δηλαδή εγγραφή → απομαγνητοφώνηση, όχι AI voice chat.
+
+- `ui/whisper/WhisperTaskModule.kt` και `WhisperScreen.kt`: εικονίδιο μικροφώνου, start/stop recording, transcript, copy/clear.
+- `ui/common/textandvoiceinput/HoldToDictate.kt`: push-to-talk και release-to-send, όχι διαρκές hands-free session.
+- `HoldToDictateViewModel.kt`: χρησιμοποιεί Android `SpeechRecognizer`, σήμερα με `EXTRA_LANGUAGE="en-US"` — απαιτεί διόρθωση για ελληνική ομιλία/locale και ξεκάθαρη πολιτική offline.
+- `ui/common/chat/MessageInputText.kt` / `AudioRecorderPanel.kt`: επιλογή ή εγγραφή audio clip και προσθήκη σε μήνυμα.
+- `ui/common/chat/AudioPlaybackPanel.kt`: παίζει PCM ήχο υπάρχοντος clip μέσω `AudioTrack`, **όχι** φωνητική έξοδο μοντέλου.
+- `runtime/LlamaCppModelHelper.kt`: GGUF image/audio inputs ακόμη απορρίπτονται· model-generated audio δεν έχει κλήση/renderer.
+
+**Απαίτηση επόμενης έκδοσης:** ανεξάρτητο `Voice Conversation` entrypoint στην κύρια διεπαφή, πραγματική διαδρομή μικρόφωνο → inference → speech playback, διατήρηση context, σαφείς καταστάσεις listening/thinking/speaking/paused/error, permission/mute/stop, χειρισμός ηχείου/ακουστικών και δυνατότητα διακοπής. Να μη συγχέεται με Voice Input ή Audio Scribe. Δεν διαφημίζουμε real-time/full-duplex/barge-in μέχρι να επαληθευτούν.
