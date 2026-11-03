@@ -1,8 +1,10 @@
 #include <jni.h>
 #include <android/log.h>
 #include "llama.h"
+#include "mtmd.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -164,10 +166,10 @@ public:
         if (chatTemplate_.empty()) throw std::runtime_error("GGUF does not provide a chat template");
 
         batch_ = llama_batch_init(kBatchSize, 0, 1);
-        if (!batch_.token || !batch_.pos || !batch_.logits || !batch_.seq_id) {
+        batchReady_ = true;
+        if (!batch_.token || !batch_.pos || !batch_.logits || !batch_.seq_id || !batch_.n_seq_id) {
             throw std::runtime_error("Failed to allocate llama batch");
         }
-        batchReady_ = true;
     }
 
     ~Inference() {
@@ -175,6 +177,28 @@ public:
     }
 
     void cancel() { cancelled_.store(true, std::memory_order_release); }
+
+    std::array<int32_t, 5> loadProjector(const std::string & mmprojPath) {
+        std::lock_guard<std::mutex> guard(mutex_);
+        if (generationActive_) throw std::runtime_error("Cannot load projector during generation");
+        if (mmprojPath.empty()) throw std::invalid_argument("Projector path is empty");
+        mtmd_context_params params = mtmd_context_params_default();
+        params.use_gpu = false;
+        params.n_threads = 4;
+        params.warmup = false;
+        mtmd::context_ptr candidate(mtmd_init_from_file(mmprojPath.c_str(), model_.get(), params));
+        if (!candidate) throw std::runtime_error("Failed to load mmproj for GGUF model");
+        const auto audioOutput = mtmd_gen_audio_get_info(candidate.get());
+        const std::array<int32_t, 5> capabilities = {
+            mtmd_support_audio(candidate.get()) ? 1 : 0,
+            mtmd_support_vision(candidate.get()) ? 1 : 0,
+            audioOutput.type != MTMD_GEN_AUDIO_TYPE_NONE ? 1 : 0,
+            mtmd_get_audio_sample_rate(candidate.get()),
+            audioOutput.sample_rate,
+        };
+        projector_ = std::move(candidate);
+        return capabilities;
+    }
 
     void addMessage(const std::string & role, const std::string & text) {
         std::lock_guard<std::mutex> guard(mutex_);
@@ -200,6 +224,7 @@ public:
             generated_ = 0;
             decodedPosition_ = 0;
             hasPendingToken_ = false;
+            hasLogits_ = false;
 
             std::vector<llama_chat_message> chat;
             chat.reserve(messages_.size());
@@ -350,6 +375,7 @@ private:
     std::atomic<bool> cancelled_{false};
     std::unique_ptr<llama_model, LlamaModelFree> model_;
     std::unique_ptr<llama_context, LlamaContextFree> context_;
+    mtmd::context_ptr projector_;
     std::unique_ptr<llama_sampler, LlamaSamplerFree> sampler_;
     llama_batch batch_{};
     bool batchReady_ = false;
@@ -408,6 +434,21 @@ Java_com_jegly_offlineLLM_smollm_SmolLM_loadModel(
         registry.emplace(handle, std::move(engine));
     });
     return handle;
+}
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_com_jegly_offlineLLM_smollm_SmolLM_loadProjectorNative(
+    JNIEnv * env, jobject, jlong handle, jstring mmprojPath) {
+    jintArray output = nullptr;
+    invokeVoid(env, [&] {
+        JavaString path(env, mmprojPath);
+        const auto capabilities = lookup(handle)->loadProjector(path.c_str());
+        output = env->NewIntArray(static_cast<jsize>(capabilities.size()));
+        if (!output) throw std::runtime_error("Failed to allocate projector capability array");
+        env->SetIntArrayRegion(output, 0, static_cast<jsize>(capabilities.size()),
+                               reinterpret_cast<const jint *>(capabilities.data()));
+    });
+    return output;
 }
 
 extern "C" JNIEXPORT void JNICALL

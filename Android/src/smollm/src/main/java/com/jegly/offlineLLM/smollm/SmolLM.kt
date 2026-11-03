@@ -26,6 +26,7 @@ class SmolLM {
         val numThreads: Int = 4,
         val useMmap: Boolean = true,
         val useMlock: Boolean = false,
+        val projectorPath: String? = null,
     )
 
     object DefaultParams {
@@ -59,6 +60,29 @@ class SmolLM {
                 close(handle)
                 throw e
             }
+        }
+
+    data class ProjectorCapabilities(
+        val audioInput: Boolean,
+        val imageInput: Boolean,
+        val audioOutput: Boolean,
+        val inputSampleRate: Int,
+        val outputSampleRate: Int,
+    )
+
+    suspend fun loadProjector(path: String): ProjectorCapabilities =
+        withContext(Dispatchers.IO) {
+            val handle = nativePtr
+            check(handle != 0L) { "Load the GGUF model before its mmproj." }
+            val values = loadProjectorNative(handle, path)
+            check(values.size == 5) { "Invalid projector capability response." }
+            ProjectorCapabilities(
+                audioInput = values[0] != 0,
+                imageInput = values[1] != 0,
+                audioOutput = values[2] != 0,
+                inputSampleRate = values[3],
+                outputSampleRate = values[4],
+            )
         }
 
     /**
@@ -154,6 +178,7 @@ class SmolLM {
         nThreads: Int, useMmap: Boolean, useMlock: Boolean
     ): Long
 
+    private external fun loadProjectorNative(modelPtr: Long, mmprojPath: String): IntArray
     private external fun addChatMessage(modelPtr: Long, message: String, role: String)
     private external fun getResponseGenerationSpeed(modelPtr: Long): Float
     private external fun getContextSizeUsed(modelPtr: Long): Int

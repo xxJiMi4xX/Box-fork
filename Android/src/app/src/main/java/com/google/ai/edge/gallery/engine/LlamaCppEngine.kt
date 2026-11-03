@@ -69,6 +69,13 @@ class LlamaCppEngine {
             loadJob = CoroutineScope(Dispatchers.Default).launch {
                 try {
                     instance.load(modelPath, params)
+                    params.projectorPath?.let { projectorPath ->
+                        val caps = instance.loadProjector(projectorPath)
+                        android.util.Log.i(
+                            "BoxOmni",
+                            "Projector loaded: audioInput=${caps.audioInput}, imageInput=${caps.imageInput}, audioOutput=${caps.audioOutput}"
+                        )
+                    }
 
                     if (systemPrompt.isNotBlank()) {
                         instance.addSystemPrompt(systemPrompt)
@@ -85,6 +92,7 @@ class LlamaCppEngine {
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    instance.close()
                     withContext(Dispatchers.Main) {
                         onError(e)
                     }
@@ -130,6 +138,13 @@ class LlamaCppEngine {
                     instance.close()
                     instance = SmolLM()
                     instance.load(modelPath, params)
+                    params.projectorPath?.let { projectorPath ->
+                        val caps = instance.loadProjector(projectorPath)
+                        android.util.Log.i(
+                            "BoxOmni",
+                            "Projector loaded: audioInput=${caps.audioInput}, imageInput=${caps.imageInput}, audioOutput=${caps.audioOutput}"
+                        )
+                    }
 
                     if (systemPrompt.isNotBlank()) {
                         instance.addSystemPrompt(systemPrompt)
