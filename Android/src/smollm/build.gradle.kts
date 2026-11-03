@@ -26,6 +26,10 @@ extensions.configure<com.android.build.api.dsl.LibraryExtension>("android") {
                 arguments += "-DLLAMA_BUILD_COMMON=OFF"
                 arguments += "-DLLAMA_CURL=OFF"
                 arguments += "-DGGML_LLAMAFILE=OFF"
+                arguments += "-DGGML_NATIVE=OFF"
+                arguments += "-DGGML_CPU_KLEIDIAI=ON"
+                arguments += "-DGGML_OPENMP=OFF"
+                arguments += "-DGGML_VULKAN=ON"
             }
         }
     }
