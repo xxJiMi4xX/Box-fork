@@ -93,6 +93,7 @@ fun OmniVoiceScreen(
     var selectedName by remember { mutableStateOf<String?>(null) }
     var expanded by remember { mutableStateOf(false) }
     var settingsExpanded by remember { mutableStateOf(false) }
+    var gpuMenuExpanded by remember { mutableStateOf(false) }
     var importUri by remember { mutableStateOf<Uri?>(null) }
     var importInfo by remember { mutableStateOf<ImportedModel?>(null) }
     var importStage by remember { mutableStateOf(0) }
@@ -125,6 +126,21 @@ fun OmniVoiceScreen(
                 VoiceGgufRuntimeSettings.cpuThreads(context, it.getPath(context))
             } ?: VoiceGgufRuntimeSettings.defaultCpuThreads()
         )
+    }
+    var cpuBatchThreads by remember(selected?.name) {
+        mutableStateOf(selected?.let {
+            VoiceGgufRuntimeSettings.cpuBatchThreads(context, it.getPath(context))
+        } ?: VoiceGgufRuntimeSettings.defaultCpuThreads())
+    }
+    var gpuLayers by remember(selected?.name) {
+        mutableStateOf(selected?.let {
+            VoiceGgufRuntimeSettings.gpuLayers(context, it.getPath(context))
+        } ?: 0)
+    }
+    var gpuProjector by remember(selected?.name) {
+        mutableStateOf(selected?.let {
+            VoiceGgufRuntimeSettings.gpuProjector(context, it.getPath(context))
+        } ?: false)
     }
     var unloading by remember(selected?.name) { mutableStateOf(false) }
     var runtimeError by remember(selected?.name) { mutableStateOf<String?>(null) }
@@ -269,7 +285,63 @@ fun OmniVoiceScreen(
                 ) { Text("Ρυθμίσεις CPU: $cpuThreads νήματα" + if (settingsExpanded) " ▴" else " ▾") }
                 if (settingsExpanded) {
                     Text("Υπολογισμός GGUF", style = MaterialTheme.typography.titleMedium)
-                    Text("Backend: CPU. Η GPU/Vulkan δεν είναι ενεργή σε αυτό το APK.")
+                    val gpuLabel = when (gpuLayers) {
+                        0 -> "CPU"
+                        -1 -> "Vulkan — όλα τα layers"
+                        else -> "Vulkan — $gpuLayers layers"
+                    }
+                    Text("Backend GGUF")
+                    Box {
+                        OutlinedButton(
+                            onClick = { gpuMenuExpanded = true },
+                            enabled = !unloading,
+                        ) { Text(gpuLabel) }
+                        DropdownMenu(
+                            expanded = gpuMenuExpanded,
+                            onDismissRequest = { gpuMenuExpanded = false },
+                        ) {
+                            listOf(0, 4, 8, 16, 32, -1).forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(when (option) {
+                                        0 -> "CPU — χωρίς GPU"
+                                        -1 -> "Vulkan — όλα τα layers"
+                                        else -> "Vulkan — $option layers"
+                                    }) },
+                                    onClick = {
+                                        gpuMenuExpanded = false
+                                        runCatching {
+                                            VoiceGgufRuntimeSettings.setGpuLayers(
+                                                context, selected.getPath(context), option)
+                                        }.onSuccess {
+                                            gpuLayers = option
+                                            runtimeError = null
+                                        }.onFailure { runtimeError = it.message }
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    OutlinedButton(
+                        enabled = !unloading && gpuLayers != 0,
+                        onClick = {
+                            val next = !gpuProjector
+                            runCatching {
+                                VoiceGgufRuntimeSettings.setGpuProjector(
+                                    context, selected.getPath(context), next)
+                            }.onSuccess {
+                                gpuProjector = next
+                                runtimeError = null
+                            }.onFailure { runtimeError = it.message }
+                        },
+                    ) {
+                        Text(if (gpuProjector) "Audio projector: Vulkan" else
+                            "Audio projector: CPU")
+                    }
+                    Text(
+                        "Οι αλλαγές GPU εφαρμόζονται μετά από Επαναφόρτωση. " +
+                        "Αν αποτύχει το Vulkan, γίνεται επιστροφή σε CPU.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                     Text("Νήματα CPU: $cpuThreads / $maxCpuThreads")
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         OutlinedButton(
@@ -301,8 +373,48 @@ fun OmniVoiceScreen(
                             },
                         ) { Text("+") }
                     }
+                    Text("Νήματα CPU για prompt: $cpuBatchThreads / $maxCpuThreads")
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedButton(
+                            enabled = cpuBatchThreads > 1 && !unloading,
+                            onClick = {
+                                val next = cpuBatchThreads - 1
+                                runCatching {
+                                    VoiceGgufRuntimeSettings.setCpuBatchThreads(
+                                        context, selected.getPath(context), next)
+                                }.onSuccess {
+                                    cpuBatchThreads = next
+                                    runtimeError = null
+                                }.onFailure { runtimeError = it.message }
+                            },
+                        ) { Text("− prompt") }
+                        OutlinedButton(
+                            enabled = cpuBatchThreads < maxCpuThreads && !unloading,
+                            onClick = {
+                                val next = cpuBatchThreads + 1
+                                runCatching {
+                                    VoiceGgufRuntimeSettings.setCpuBatchThreads(
+                                        context, selected.getPath(context), next)
+                                }.onSuccess {
+                                    cpuBatchThreads = next
+                                    runtimeError = null
+                                }.onFailure { runtimeError = it.message }
+                            },
+                        ) { Text("+ prompt") }
+                    }
                     val activeThreads = engine?.lastLoadParams?.numThreads
                     if (modelLoaded && activeThreads != null) {
+                        Text(
+                            "Ενεργό backend: " +
+                                if (engine.lastLoadParams?.numGpuLayers == 0) "CPU"
+                                else "Vulkan",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Text(
+                            "Ενεργά prompt threads: " +
+                            (engine.lastLoadParams?.numThreadsBatch ?: "—"),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                         Text(
                             if (activeThreads == cpuThreads) "Ενεργά CPU threads: $activeThreads"
                             else "Ενεργά CPU threads: $activeThreads. Πάτησε Επαναφόρτωση για να χρησιμοποιηθούν $cpuThreads.",
