@@ -26,12 +26,14 @@ LLMInference::~LLMInference() {
 void LLMInference::loadModel(const char *path, float minP, float temperature, float topP,
                              int topK, float repeatPenalty, bool storeChats,
                              long contextSize, const char *chatTemplate,
-                             int nThreads, bool useMmap, bool useMlock, const char *mmprojPath) {
+                             int nThreads, int nThreadsBatch, int nGpuLayers, bool gpuProjector,
+                             bool useMmap, bool useMlock, const char *mmprojPath) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!path || !*path || model_) throw std::invalid_argument("Invalid model path or duplicate load");
     if (!std::isfinite(temperature) || !std::isfinite(minP) || !std::isfinite(topP) ||
         !std::isfinite(repeatPenalty)) throw std::invalid_argument("Invalid sampling configuration");
-    if (contextSize < 256 || contextSize > 8192 || nThreads < 1 || nThreads > 32)
+    if (contextSize < 256 || contextSize > 8192 || nThreads < 1 || nThreads > 32 ||
+        nThreadsBatch < 1 || nThreadsBatch > 32 || nGpuLayers < -1 || nGpuLayers > 512)
         throw std::invalid_argument("Context must be 256..8192; threads 1..32");
     static std::once_flag initOnce;
     std::call_once(initOnce, [] {
@@ -39,7 +41,13 @@ void LLMInference::loadModel(const char *path, float minP, float temperature, fl
         ggml_backend_load_all();
     });
     llama_model_params mp = llama_model_default_params();
-    mp.n_gpu_layers = 0; // Verified CPU baseline; add Vulkan only after stability.
+    // Only enable GPU layers when a real Vulkan device is visible.
+    // A negative layer count is llama.cpp's supported "all layers" mode.
+    if (nGpuLayers != 0 &&
+        ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU) == nullptr) {
+        throw std::runtime_error("Vulkan GPU device unavailable; select CPU mode");
+    }
+    mp.n_gpu_layers = nGpuLayers;
     mp.load_mode = useMmap
         ? (useMlock ? LLAMA_LOAD_MODE_MMAP_MLOCK : LLAMA_LOAD_MODE_MMAP)
         : (useMlock ? LLAMA_LOAD_MODE_MLOCK : LLAMA_LOAD_MODE_NONE);
@@ -54,7 +62,8 @@ void LLMInference::loadModel(const char *path, float minP, float temperature, fl
     cp.n_batch = static_cast<uint32_t>(std::min<long>(512, contextSize));
     cp.n_ubatch = static_cast<uint32_t>(std::min<long>(256, contextSize));
     cp.n_threads = nThreads;
-    cp.n_threads_batch = nThreads;
+    cp.n_threads_batch = nThreadsBatch;
+    cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO;
     cp.no_perf = true;
     cp.embeddings = true; // Required for LFM3 audio-generation hidden state.
     context_ = llama_init_from_model(model_, cp);
@@ -80,7 +89,7 @@ void LLMInference::loadModel(const char *path, float minP, float temperature, fl
     storeChats_ = storeChats;
     if (mmprojPath && *mmprojPath) {
         auto params = mtmd_context_params_default();
-        params.use_gpu = false;
+        params.use_gpu = gpuProjector && nGpuLayers != 0;
         params.n_threads = nThreads;
         mmproj_ = mtmd_init_from_file(mmprojPath, model_, params);
         if (!mmproj_) throw std::runtime_error("Cannot load the matching mmproj GGUF");
