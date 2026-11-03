@@ -423,12 +423,16 @@ std::string LLMInference::transcribeAudio(const std::vector<float> &pcm) {
     if (!asrSampler) throw std::runtime_error("Cannot initialize ASR sampler");
     const llama_vocab *vocab = llama_model_get_vocab(model_);
     std::string transcript;
+    bool transcriptionFinished = false;
     const int32_t remaining = static_cast<int32_t>(llama_n_ctx(context_) - nPast - 1);
     const int32_t limit = std::min<int32_t>(2048, remaining);
     for (int32_t i = 0; i < limit; ++i) {
         if (stopRequested_.load()) throw std::runtime_error("Transcription interrupted");
         const llama_token tok = llama_sampler_sample(asrSampler.get(), context_, -1);
-        if (llama_vocab_is_eog(vocab, tok)) break;
+        if (llama_vocab_is_eog(vocab, tok)) {
+            transcriptionFinished = true;
+            break;
+        }
         if (!llama_vocab_is_control(vocab, tok)) transcript += tokenToPiece(tok);
         llama_token mutableToken = tok;
         if (llama_decode(context_, llama_batch_get_one(&mutableToken, 1)) != 0)
@@ -437,6 +441,8 @@ std::string LLMInference::transcribeAudio(const std::vector<float> &pcm) {
     }
     llama_memory_clear(llama_get_memory(context_), false);
     llama_sampler_reset(sampler_);
+    if (!transcriptionFinished)
+        throw std::runtime_error("Audio transcription reached the token or context limit");
     if (transcript.find_first_not_of(" \t\r\n") == std::string::npos)
         throw std::runtime_error("No intelligible audio transcript produced");
     return transcript;
@@ -493,7 +499,7 @@ std::vector<uint8_t> LLMInference::synthesizeSpeech(const std::string &text) {
     const float *hidden = llama_get_embeddings_ith(context_, -1);
     if (!hidden) throw std::runtime_error("Speech decoder returned no hidden state");
     bool done = false;
-    for (int frames = 0; frames < 512 && !done; ++frames) {
+    for (int frames = 0; frames < 768 && !done; ++frames) {
         if (stopRequested_.load()) throw std::runtime_error("Speech generation cancelled");
         const float *nextHidden = nullptr;
         if (mtmd_helper_gen_audio_step_gen(gen, semantic, hidden, &nextHidden, &done) != 0)
@@ -507,6 +513,7 @@ std::vector<uint8_t> LLMInference::synthesizeSpeech(const std::string &text) {
         llama_sampler_accept(sampler_, semantic);
     }
     if (stopRequested_.load()) throw std::runtime_error("Speech generation cancelled");
+    if (!done) throw std::runtime_error("Speech decoder reached frame cap without audio EOS");
     int32_t rate = 0;
     const char *bytes = nullptr;
     size_t size = 0;
