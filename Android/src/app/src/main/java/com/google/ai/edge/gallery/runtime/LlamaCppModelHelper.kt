@@ -60,6 +60,7 @@ object LlamaCppModelHelper : LlmModelHelper {
             numThreadsBatch = VoiceGgufRuntimeSettings.cpuBatchThreads(context, modelPath),
             numGpuLayers = VoiceGgufRuntimeSettings.gpuLayers(context, modelPath),
             gpuProjector = VoiceGgufRuntimeSettings.gpuProjector(context, modelPath),
+            performanceCoresOnly = VoiceGgufRuntimeSettings.performanceCoresOnly(context, modelPath),
             mmprojPath = projector,
         )
 
