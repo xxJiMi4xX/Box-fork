@@ -887,8 +887,10 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     onDone: () -> Unit = {},
     enableConversationConstrainedDecoding: Boolean = false,
   ) {
+    val resetGate = beginHistorySynchronization(model)
     viewModelScope.launch(Dispatchers.Default) {
       setIsResettingSession(true)
+      var resetFailure: String? = null
       try {
         stopResponse(model = model)
 
@@ -915,11 +917,10 @@ open class LlmChatViewModelBase() : ChatViewModel() {
           }
         }
         if (!succeeded) {
+          resetFailure = lastError?.message ?: "Άγνωστο σφάλμα native reset"
           addMessage(
             model = model,
-            message = ChatMessageError(
-              "Η επαναφορά απέτυχε: ${lastError?.message ?: "άγνωστο σφάλμα"}"
-            ),
+            message = ChatMessageError("Η επαναφορά απέτυχε: $resetFailure"),
           )
         } else {
           clearAllMessages(model = model)
@@ -936,6 +937,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
         }
       } finally {
         setIsResettingSession(false)
+        endHistorySynchronization(model, resetGate, resetFailure)
       }
     }
   }
