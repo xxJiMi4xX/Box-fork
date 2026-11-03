@@ -25,6 +25,9 @@ class SmolLM {
         val contextSize: Long? = null,
         val chatTemplate: String? = null,
         val numThreads: Int = 4,
+        val numThreadsBatch: Int = numThreads,
+        val numGpuLayers: Int = 0,
+        val gpuProjector: Boolean = false,
         val useMmap: Boolean = true,
         val useMlock: Boolean = false,
         val mmprojPath: String? = null,
@@ -55,6 +58,9 @@ class SmolLM {
                     .coerceIn(256L, minOf(8192L, modelContextSize.coerceAtLeast(256L))),
                 params.chatTemplate ?: modelChatTemplate,
                 params.numThreads,
+                params.numThreadsBatch,
+                params.numGpuLayers,
+                params.gpuProjector,
                 params.useMmap,
                 params.useMlock,
                 params.mmprojPath ?: "",
@@ -200,7 +206,8 @@ class SmolLM {
     private external fun loadModel(
         modelPath: String, minP: Float, temperature: Float, topP: Float, topK: Int,
         repeatPenalty: Float, storeChats: Boolean, contextSize: Long, chatTemplate: String,
-        nThreads: Int, useMmap: Boolean, useMlock: Boolean, mmprojPath: String
+        nThreads: Int, nThreadsBatch: Int, nGpuLayers: Int, gpuProjector: Boolean,
+        useMmap: Boolean, useMlock: Boolean, mmprojPath: String
     ): Long
 
     private external fun addChatMessage(modelPtr: Long, message: String, role: String)
