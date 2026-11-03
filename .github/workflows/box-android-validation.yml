@@ -66,6 +66,13 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends libvulkan-dev glslc spirv-headers
+          # Keep host Vulkan C++ headers outside the NDK sysroot and away from
+          # /usr/include, so Android clang does not see host libc headers.
+          test -s /usr/include/vulkan/vulkan.hpp
+          mkdir -p "$RUNNER_TEMP/box-vulkan-headers"
+          cp -a /usr/include/vulkan "$RUNNER_TEMP/box-vulkan-headers/"
+          test -s "$RUNNER_TEMP/box-vulkan-headers/vulkan/vulkan.hpp"
+          echo "BOX_VULKAN_HEADERS_DIR=$RUNNER_TEMP/box-vulkan-headers" >> "$GITHUB_ENV"
 
       - name: Check bundled MediaTek LiteRT NPU libraries
         shell: bash
