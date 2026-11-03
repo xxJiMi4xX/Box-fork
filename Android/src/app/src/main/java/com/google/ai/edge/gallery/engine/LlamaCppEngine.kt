@@ -12,6 +12,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -52,6 +53,8 @@ class LlamaCppEngine {
         private set
     @Volatile var isVoiceBusy = false
         private set
+    @Volatile var supportsGreekVoice = false
+        private set
 
     data class GenerationResult(
         val response: String,
@@ -87,6 +90,7 @@ class LlamaCppEngine {
                     instance = next
                     try {
                         next.load(modelPath, params)
+                        supportsGreekVoice = next.audioCapabilities() == 3
                         if (systemPrompt.isNotBlank()) next.addSystemPrompt(systemPrompt)
                         conversationHistory.forEach { (role, content) ->
                             next.addChatMessage(role, content)
@@ -94,6 +98,7 @@ class LlamaCppEngine {
                         currentCoroutineContext().ensureActive()
                         check(lifecycleEpoch.get() == epoch) { "Model load was superseded" }
                     } catch (failure: Throwable) {
+                        supportsGreekVoice = false
                         next.close()
                         if (instance === next) instance = SmolLM()
                         throw failure
@@ -123,6 +128,7 @@ class LlamaCppEngine {
         loadJob?.cancel()
         lifecycleEpoch.incrementAndGet()
         isModelLoaded.set(false)
+        supportsGreekVoice = false
         // Close the captured instance only after any active JNI call releases
         // the native mutex. A subsequent model load cannot be closed by this job.
         val previous = instance
@@ -141,6 +147,11 @@ class LlamaCppEngine {
         latestTeardown.set(teardown)
     }
 
+    /**
+     * LlmModelHelper.resetConversation has a synchronous contract. Do not
+     * fire-and-forget a full model reload: return only after native history
+     * and KV cache are reset. Called from ViewModel Dispatchers.Default.
+     */
     fun resetConversation(
         modelPath: String,
         params: SmolLM.InferenceParams = lastLoadParams ?: SmolLM.InferenceParams(),
@@ -148,13 +159,25 @@ class LlamaCppEngine {
         onSuccess: () -> Unit = {},
         onError: (Exception) -> Unit = {},
     ) {
-        loadModel(
-            modelPath = modelPath,
-            params = params,
-            systemPrompt = systemPrompt,
-            onSuccess = onSuccess,
-            onError = onError,
-        )
+        if (modelPath != lastModelPath) {
+            onError(IllegalArgumentException("Cannot reset a different loaded GGUF"))
+            return
+        }
+        val activeGeneration = generationJob
+        stopGeneration()
+        try {
+            runBlocking(Dispatchers.IO) {
+                activeGeneration?.join()
+                nativeMutex.withLock {
+                    check(isModelLoaded.get()) { "Model is not loaded" }
+                    instance.resetConversation(systemPrompt)
+                }
+            }
+            lastSystemPrompt = systemPrompt
+            onSuccess()
+        } catch (error: Exception) {
+            onError(error)
+        }
     }
 
     suspend fun transcribeWav(wav: ByteArray): String = withContext(Dispatchers.IO) {

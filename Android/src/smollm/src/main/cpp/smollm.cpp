@@ -254,3 +254,21 @@ Java_com_jegly_offlineLLM_smollm_SmolLM_nativeRequestStop(
     JNIEnv *env, jobject, jlong id) {
     checked(env, [&] { getInstance(id)->requestStop(); });
 }
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_jegly_offlineLLM_smollm_SmolLM_nativeAudioCapabilities(
+    JNIEnv *env, jobject, jlong id) {
+    jint capabilities = 0;
+    checked(env, [&] { capabilities = getInstance(id)->audioCapabilities(); });
+    return capabilities;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_jegly_offlineLLM_smollm_SmolLM_nativeResetConversation(
+    JNIEnv *env, jobject, jlong id, jstring systemPrompt) {
+    checked(env, [&] {
+        auto instance = getInstance(id);
+        const std::string prompt = utf(env, systemPrompt);
+        instance->resetConversation(prompt.c_str());
+    });
+}

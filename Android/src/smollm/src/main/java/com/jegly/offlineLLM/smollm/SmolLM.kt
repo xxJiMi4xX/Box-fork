@@ -89,6 +89,16 @@ class SmolLM {
         if (handle != 0L) nativeRequestStop(handle)
     }
 
+    fun audioCapabilities(): Int {
+        verifyHandle()
+        return nativeAudioCapabilities(nativePtr)
+    }
+
+    fun resetConversation(systemPrompt: String) {
+        verifyHandle()
+        nativeResetConversation(nativePtr, systemPrompt)
+    }
+
     fun audioSampleRate(): Int {
         verifyHandle()
         return nativeAudioSampleRate(nativePtr)
@@ -180,6 +190,8 @@ class SmolLM {
     private external fun stopCompletion(modelPtr: Long)
     private external fun nativeRequestStop(modelPtr: Long)
     private external fun nativeAudioSampleRate(modelPtr: Long): Int
+    private external fun nativeAudioCapabilities(modelPtr: Long): Int
+    private external fun nativeResetConversation(modelPtr: Long, systemPrompt: String)
     private external fun nativeTranscribeAudio(modelPtr: Long, pcm: FloatArray): String
     private external fun nativeSynthesizeSpeech(modelPtr: Long, text: String): ByteArray
     private external fun benchModel(modelPtr: Long, pp: Int, tg: Int, pl: Int, nr: Int): String
