@@ -28,6 +28,7 @@ class SmolLM {
         val numThreadsBatch: Int = numThreads,
         val numGpuLayers: Int = 0,
         val gpuProjector: Boolean = false,
+        val performanceCoresOnly: Boolean = false,
         val useMmap: Boolean = true,
         val useMlock: Boolean = false,
         val mmprojPath: String? = null,
@@ -61,6 +62,7 @@ class SmolLM {
                 params.numThreadsBatch,
                 params.numGpuLayers,
                 params.gpuProjector,
+                params.performanceCoresOnly,
                 params.useMmap,
                 params.useMlock,
                 params.mmprojPath ?: "",
@@ -206,7 +208,8 @@ class SmolLM {
     private external fun loadModel(
         modelPath: String, minP: Float, temperature: Float, topP: Float, topK: Int,
         repeatPenalty: Float, storeChats: Boolean, contextSize: Long, chatTemplate: String,
-        nThreads: Int, nThreadsBatch: Int, nGpuLayers: Int, gpuProjector: Boolean,
+        nThreads: Int, nThreadsBatch: Int, nGpuLayers: Int,
+        gpuProjector: Boolean, performanceCoresOnly: Boolean,
         useMmap: Boolean, useMlock: Boolean, mmprojPath: String
     ): Long
 
