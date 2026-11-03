@@ -31,6 +31,9 @@ class LlamaCppEngine {
         // Releasing a large GGUF must complete before loading the next one,
         // even when old/new engines are different instances.
         private val latestTeardown = AtomicReference<Job?>(null)
+        // Loading and unloading model weights share process-wide llama.cpp
+        // backend state; serialize ownership transitions across instances.
+        private val globalModelMutex = Mutex()
     }
 
     @Volatile private var instance = SmolLM()
@@ -85,7 +88,8 @@ class LlamaCppEngine {
         loadJob = scope.launch {
             try {
                 pendingTeardown?.join()
-                nativeMutex.withLock {
+                globalModelMutex.withLock {
+                  nativeMutex.withLock {
                     val previous = instance
                     previous.close()
                     val next = SmolLM()
@@ -105,6 +109,7 @@ class LlamaCppEngine {
                         if (instance === next) instance = SmolLM()
                         throw failure
                     }
+                  }
                 }
                 withContext(Dispatchers.Main) {
                     if (lifecycleEpoch.get() == epoch) {
@@ -131,16 +136,20 @@ class LlamaCppEngine {
         lifecycleEpoch.incrementAndGet()
         isModelLoaded.set(false)
         supportsGreekVoice = false
-        // Close the captured instance only after any active JNI call releases
-        // the native mutex. A subsequent model load cannot be closed by this job.
-        val previous = instance
+        // Do not capture instance before the cancelled load job exits:
+        // it may still be constructing a *different* SmolLM handle.
+        val loading = loadJob
         val preceding = latestTeardown.get()
         val teardown = scope.launch(Dispatchers.IO) {
-            if (preceding != null) preceding.join()
             try {
-                nativeMutex.withLock {
-                    previous.close()
-                    if (instance === previous) instance = SmolLM()
+                loading?.join()
+                preceding?.join()
+                globalModelMutex.withLock {
+                    nativeMutex.withLock {
+                        val previous = instance
+                        previous.close()
+                        if (instance === previous) instance = SmolLM()
+                    }
                 }
             } finally {
                 withContext(NonCancellable + Dispatchers.Main) { onDone() }
