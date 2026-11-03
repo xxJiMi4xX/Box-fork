@@ -24,6 +24,7 @@ public:
     void loadModel(const char *path, float minP, float temperature, float topP, int topK,
                    float repeatPenalty, bool storeChats, long contextSize,
                    const char *chatTemplate, int nThreads, int nThreadsBatch, int nGpuLayers, bool gpuProjector,
+                   bool performanceCoresOnly,
                    bool useMmap, bool useMlock, const char *mmprojPath);
     void addChatMessage(const char *message, const char *role);
     float getResponseGenerationTime();
@@ -56,6 +57,8 @@ private:
     llama_sampler *sampler_ = nullptr;
     mtmd_context *mmproj_ = nullptr;
     mtmd_helper_gen_audio *mixedGen_ = nullptr;
+    ggml_threadpool_t performancePool_ = nullptr;
+    ggml_threadpool_t batchPool_ = nullptr;
     std::vector<float> mixedHidden_;
     std::string ttsTemplate_;
     int audioCapabilities_ = 0;
