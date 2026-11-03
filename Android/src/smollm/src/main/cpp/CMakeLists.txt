@@ -1,121 +1,42 @@
 cmake_minimum_required(VERSION 3.22.1)
-project("smollm")
+project(box_omni_native LANGUAGES C CXX)
 
-# llama.cpp must be cloned at the project root as a submodule
-# git submodule add https://github.com/ggerganov/llama.cpp.git
-add_subdirectory(../../../../llama.cpp llama.cpp)
-set(LLAMA_DIR_RELATIVE "../../../../llama.cpp")
-get_filename_component(LLAMA_DIR ${LLAMA_DIR_RELATIVE} ABSOLUTE)
-
-set(GGML_DIR ${LLAMA_DIR}/ggml)
-set(COMMON_DIR ${LLAMA_DIR}/common)
-set(VENDOR_DIR ${LLAMA_DIR}/vendor)
-
-target_compile_options(
-        llama
-        PUBLIC
-        -fvisibility=hidden -fvisibility-inlines-hidden
-)
-target_compile_options(
-        llama
-        PUBLIC
-        -ffunction-sections -fdata-sections
-)
-target_link_options(
-        llama
-        PRIVATE
-        -Wl,--gc-sections -flto
-        -Wl,--exclude-libs,ALL
-)
-
-function(build_library target_name)
-    add_library(
-            ${target_name}
-            SHARED
-            LLMInference.cpp
-            smollm.cpp
-    )
-    target_include_directories(
-            ${target_name}
-            PUBLIC
-            ${COMMON_DIR}
-            ${GGML_DIR}/include
-            ${GGML_DIR}/src
-            ${GGML_DIR}/src/ggml-cpu
-            ${LLAMA_DIR}/include
-            ${VENDOR_DIR}
-    )
-    target_compile_options(
-            ${target_name}
-            PUBLIC
-            -fvisibility=hidden -fvisibility-inlines-hidden
-    )
-    target_compile_options(
-            ${target_name}
-            PUBLIC
-            -ffunction-sections -fdata-sections
-    )
-    target_link_libraries(
-            ${target_name}
-            android log llama common
-    )
-    target_link_options(
-            ${target_name}
-            PRIVATE
-            -Wl,--gc-sections -flto
-            -Wl,--exclude-libs,ALL
-    )
-endfunction()
-
-function(build_library_arm64 target_name cpu_flags)
-    build_library(${target_name})
-    target_compile_options(
-            ${target_name}
-            PUBLIC
-            -DGGML_USE_CPU -DGGML_USE_CPU_AARCH64 ${cpu_flags} -O3
-    )
-endfunction()
-
-function(build_library_universal target_name)
-    build_library(${target_name})
-    target_compile_options(
-            ${target_name}
-            PUBLIC
-            -DGGML_USE_CPU -O3
-    )
-endfunction()
-
-build_library_universal("smollm")
-if (${ANDROID_ABI} STREQUAL "arm64-v8a")
-    build_library_arm64("smollm_v8" "-march=armv8-a")
-    build_library_arm64("smollm_v8_2_fp16" "-march=armv8.2-a+fp16")
-    build_library_arm64("smollm_v8_2_fp16_dotprod" "-march=armv8.2-a+fp16+dotprod")
-    build_library_arm64("smollm_v8_4_fp16_dotprod" "-march=armv8.4-a+fp16+dotprod")
-    build_library_arm64("smollm_v8_4_fp16_dotprod_sve" "-march=armv8.4-a+fp16+dotprod+sve")
-    build_library_arm64("smollm_v8_4_fp16_dotprod_i8mm" "-march=armv8.4-a+fp16+dotprod+i8mm")
-    build_library_arm64("smollm_v8_4_fp16_dotprod_i8mm_sve" "-march=armv8.4-a+fp16+dotprod+i8mm+sve")
+if(NOT CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
+    message(FATAL_ERROR "Box Omni JNI currently supports arm64-v8a only")
 endif()
 
-# GGUFReader library
-set(TARGET_NAME_GGUF_READER ggufreader)
-add_library(${TARGET_NAME_GGUF_READER} SHARED GGUFReader.cpp)
-target_include_directories(
-        ${TARGET_NAME_GGUF_READER}
-        PUBLIC
-        ${GGML_DIR}/include
-)
-target_compile_options(
-        ${TARGET_NAME_GGUF_READER}
-        PUBLIC
-        -fvisibility=hidden -fvisibility-inlines-hidden -ffunction-sections -fdata-sections
-)
-target_link_libraries(
-        ${TARGET_NAME_GGUF_READER}
-        ggml
-)
-target_link_options(
-        ${TARGET_NAME_GGUF_READER}
-        PRIVATE
-        -Wl,--gc-sections -flto
-        -Wl,--exclude-libs,ALL
+# Build upstream sources as static dependencies and expose only the Box JNI .so.
+# LiteRT-LM's NPU native libraries are packaged independently by the app module.
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_COMMON OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_APP OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_MTMD ON CACHE BOOL "" FORCE)
+set(LLAMA_CURL OFF CACHE BOOL "" FORCE)
+set(LLAMA_OPENSSL OFF CACHE BOOL "" FORCE)
+set(LLAMA_SUBPROCESS OFF CACHE BOOL "" FORCE)
+set(MTMD_VIDEO OFF CACHE BOOL "" FORCE)
+set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
+set(GGML_CPU_KLEIDIAI OFF CACHE BOOL "" FORCE)
+
+# First stage: safe ARM64 feature baseline. Upgrade to ARMv9/I8MM/SVE2
+# only after we can inspect per-core features and compare actual throughput.
+set(GGML_CPU_ARM_ARCH "armv8.2-a+fp16+dotprod" CACHE STRING "" FORCE)
+
+set(LLAMA_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../../llama.cpp")
+add_subdirectory("${LLAMA_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/llama.cpp")
+
+add_library(smollm SHARED omni_native.cpp)
+target_compile_features(smollm PRIVATE cxx_std_17)
+target_include_directories(smollm PRIVATE "${LLAMA_ROOT}/include")
+target_compile_options(smollm PRIVATE -Wall -Wextra -Werror=return-type)
+target_link_libraries(smollm PRIVATE llama mtmd log android)
+set_target_properties(smollm PROPERTIES
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN YES
 )
