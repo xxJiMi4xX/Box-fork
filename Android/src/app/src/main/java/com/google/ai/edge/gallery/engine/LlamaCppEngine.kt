@@ -190,6 +190,38 @@ class LlamaCppEngine {
         }
     }
 
+    /**
+     * Recreate the native GGUF dialogue from a durable Room conversation.
+     * This is ordered under the same mutex as decoding and model teardown.
+     * Older turns remain in Room; native prefill prunes them at n_ctx as needed.
+     */
+    suspend fun restoreConversation(
+        systemPrompt: String,
+        conversationHistory: List<Pair<String, String>>,
+    ): Int = withContext(Dispatchers.IO) {
+        require(conversationHistory.all { (role, _) -> role == "user" || role == "assistant" }) {
+            "Conversation contains an unsupported role"
+        }
+        val epoch = lifecycleEpoch.get()
+        stopGeneration()
+        val current = generationJob
+        current?.join()
+        nativeMutex.withLock {
+            check(isModelLoaded.get() && epoch == lifecycleEpoch.get()) {
+                "Model changed before saved history could be restored"
+            }
+            val model = instance
+            model.resetConversation(systemPrompt)
+            // Native prompt construction will drop oldest complete turns
+            // if they exceed the configured context window.
+            for ((role, content) in conversationHistory) {
+                model.addChatMessage(role, content)
+            }
+            lastSystemPrompt = systemPrompt
+        }
+        conversationHistory.size
+    }
+
     suspend fun transcribeWav(wav: ByteArray): String = withContext(Dispatchers.IO) {
         require(wav.isNotEmpty()) { "No recorded audio was supplied" }
         nativeMutex.withLock {
