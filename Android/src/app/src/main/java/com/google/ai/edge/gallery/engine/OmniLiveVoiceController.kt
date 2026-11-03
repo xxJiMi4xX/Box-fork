@@ -7,7 +7,6 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.AudioFormat
-import android.media.AudioDeviceInfo
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
@@ -102,7 +101,8 @@ class OmniLiveVoiceController(private val context: Context) {
             var record: AudioRecord? = null
             var counted = false
             try {
-                val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+                // Communication playback and microphone share one app-owned focus session.
+                val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
                     .setAudioAttributes(attributes)
                     .setWillPauseWhenDucked(true)
                     .setOnAudioFocusChangeListener { change ->
@@ -163,34 +163,29 @@ class OmniLiveVoiceController(private val context: Context) {
                 var total = 0
                 var inSpeech = false
                 var echoTailFrames = 0
-                var audioRouteRefresh = 0
-                var privateOutput = false
 
                 while (currentCoroutineContext().isActive) {
-                    val read = audioRecord.read(frame, 0, frame.size, AudioRecord.READ_BLOCKING)
-                    if (read < 0) throw IllegalStateException("Η ηχογράφηση διακόπηκε: $read")
-                    if (read < 2) continue
-                    val available = read and -2
-
-                    // With headphones or Android AEC, a voice can interrupt
-                    // playback. Without either, ignore loudspeaker feedback.
-                    if (audioRouteRefresh-- <= 0) {
-                        audioRouteRefresh = 50
-                        privateOutput = audioManager.getDevices(
-                            AudioManager.GET_DEVICES_OUTPUTS).any { output ->
-                            when (output.type) {
-                                AudioDeviceInfo.TYPE_WIRED_HEADSET,
-                                AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
-                                AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
-                                AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
-                                AudioDeviceInfo.TYPE_USB_HEADSET,
-                                AudioDeviceInfo.TYPE_BLE_HEADSET -> true
-                                else -> false
-                            }
-                        }
+                    // Blocking reads normally fill the request, but Android
+                    // permits short reads. Analyze exactly one 20-ms frame.
+                    var available = 0
+                    while (available < FRAME_BYTES && currentCoroutineContext().isActive) {
+                        val n = audioRecord.read(
+                            frame, available, FRAME_BYTES - available,
+                            AudioRecord.READ_BLOCKING)
+                        if (n < 0) throw IllegalStateException("Η ηχογράφηση διακόπηκε: $n")
+                        if (n == 0) continue
+                        available += n
                     }
+                    if (!currentCoroutineContext().isActive) break
+                    if (available != FRAME_BYTES) continue
+
+                    // An available headset is NOT necessarily the playback
+                    // route. Use AudioTrack.getRoutedDevice() reported by the
+                    // active player. Without AEC or private routing, avoid
+                    // speaker-driven feedback loops.
                     if (OmniVoicePlayback.activePlayers.get() > 0 &&
-                        echo?.enabled != true && !privateOutput) {
+                        echo?.enabled != true &&
+                        !OmniVoicePlayback.privateOutputRouted.get()) {
                         echoTailFrames = 18
                         preRoll.clear()
                         speech.reset()

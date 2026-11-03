@@ -2,11 +2,13 @@ package com.google.ai.edge.gallery.engine
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -18,6 +20,18 @@ import kotlinx.coroutines.withTimeoutOrNull
 class OmniVoicePlayback {
     companion object {
         val activePlayers = AtomicInteger(0)
+        val privateOutputRouted = AtomicBoolean(false)
+
+        private fun privateDevice(device: AudioDeviceInfo?): Boolean =
+            when (device?.type) {
+                AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+                AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                AudioDeviceInfo.TYPE_USB_HEADSET,
+                AudioDeviceInfo.TYPE_BLE_HEADSET -> true
+                else -> false
+            }
     }
 
     private val lock = Any()
@@ -51,7 +65,7 @@ class OmniVoicePlayback {
 
         val attributes = AudioAttributes.Builder()
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-            .setUsage(AudioAttributes.USAGE_ASSISTANT)
+            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
             .build()
 
         // The continuous listening session already holds audio focus.
@@ -96,11 +110,13 @@ class OmniVoicePlayback {
             }
             synchronized(lock) { active = player }
             player.play()
+            privateOutputRouted.set(privateDevice(player.routedDevice))
             activePlayers.incrementAndGet()
             counted = true
             var offset = 0
             while (offset < wave.pcm16.size && currentCoroutineContext().isActive &&
                 synchronized(lock) { active === player }) {
+                privateOutputRouted.set(privateDevice(player.routedDevice))
                 val count = minOf(8192, wave.pcm16.size - offset)
                 val written = player.write(
                     wave.pcm16, offset, count, AudioTrack.WRITE_BLOCKING)
@@ -117,7 +133,9 @@ class OmniVoicePlayback {
                 }
             }
         } finally {
-            if (counted) activePlayers.decrementAndGet()
+            if (counted && activePlayers.decrementAndGet() == 0) {
+                privateOutputRouted.set(false)
+            }
             synchronized(lock) { if (active === track) active = null }
             track?.let {
                 runCatching { it.pause() }
