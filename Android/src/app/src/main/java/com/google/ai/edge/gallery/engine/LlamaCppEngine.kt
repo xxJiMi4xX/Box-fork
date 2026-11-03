@@ -5,25 +5,28 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.flow.takeWhile
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.locks.ReentrantLock
-import kotlin.concurrent.withLock
 import kotlin.time.measureTime
 
 /**
- * Box: llama.cpp inference engine wrapper.
- * Provides the same lifecycle (load → generate → unload) as LiteRT
- * but backed by llama.cpp via the smollm JNI module.
+ * Serializes all JNI operations against a single native llama_context.
+ * Cancellation signals the native decode loop before waiting for the mutex.
+ * LiteRT-LM uses its own independent engine and is unaffected.
  */
 class LlamaCppEngine {
+    @Volatile private var instance = SmolLM()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val nativeMutex = Mutex()
 
-    private var instance = SmolLM()
-    private val stateLock = ReentrantLock()
-
-    // Track load params for resetConversation
     var lastLoadParams: SmolLM.InferenceParams? = null
         private set
     var lastModelPath: String? = null
@@ -31,16 +34,13 @@ class LlamaCppEngine {
     var lastSystemPrompt: String = ""
         private set
 
-    @Volatile
-    private var generationJob: Job? = null
-
-    @Volatile
-    private var loadJob: Job? = null
+    @Volatile private var generationJob: Job? = null
+    @Volatile private var loadJob: Job? = null
 
     val isModelLoaded = AtomicBoolean(false)
-
-    @Volatile
-    var isGenerating = false
+    @Volatile var isGenerating = false
+        private set
+    @Volatile var isVoiceBusy = false
         private set
 
     data class GenerationResult(
@@ -58,58 +58,55 @@ class LlamaCppEngine {
         onSuccess: () -> Unit,
         onError: (Exception) -> Unit,
     ) {
-        // Track for resetConversation
         lastLoadParams = params
         lastModelPath = modelPath
         lastSystemPrompt = systemPrompt
 
-        stateLock.withLock {
-            loadJob?.cancel()
-
-            loadJob = CoroutineScope(Dispatchers.Default).launch {
-                try {
-                    instance.load(modelPath, params)
-
-                    if (systemPrompt.isNotBlank()) {
-                        instance.addSystemPrompt(systemPrompt)
+        stopGeneration()
+        loadJob?.cancel()
+        isModelLoaded.set(false)
+        loadJob = scope.launch {
+            try {
+                nativeMutex.withLock {
+                    val previous = instance
+                    previous.close()
+                    val next = SmolLM()
+                    instance = next
+                    next.load(modelPath, params)
+                    if (systemPrompt.isNotBlank()) next.addSystemPrompt(systemPrompt)
+                    conversationHistory.forEach { (role, content) ->
+                        next.addChatMessage(role, content)
                     }
-
-                    for ((role, content) in conversationHistory) {
-                        instance.addChatMessage(role, content)
-                    }
-
-                    withContext(Dispatchers.Main) {
-                        isModelLoaded.set(true)
-                        onSuccess()
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    withContext(Dispatchers.Main) {
-                        onError(e)
-                    }
+                    currentCoroutineContext().ensureActive()
+                }
+                withContext(Dispatchers.Main) {
+                    isModelLoaded.set(true)
+                    onSuccess()
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                withContext(Dispatchers.Main) {
+                    isModelLoaded.set(false)
+                    onError(error)
                 }
             }
         }
     }
 
     fun unloadModel() {
-        stateLock.withLock {
-            generationJob?.cancel()
-            loadJob?.cancel()
-            isModelLoaded.set(false)
-            isGenerating = false
-            try {
-                instance.close()
-            } catch (_: Exception) {}
+        stopGeneration()
+        loadJob?.cancel()
+        isModelLoaded.set(false)
+        // Close the captured instance only after any active JNI call releases
+        // the native mutex. A subsequent model load cannot be closed by this job.
+        val previous = instance
+        instance = SmolLM()
+        scope.launch(Dispatchers.IO) {
+            nativeMutex.withLock { previous.close() }
         }
     }
 
-    /**
-     * Box: Reset conversation while keeping the model loaded.
-     * Closes the current llama.cpp context and re-opens with the same params.
-     * This clears the KV cache and chat history without reloading weights from disk.
-     */
     fun resetConversation(
         modelPath: String,
         params: SmolLM.InferenceParams = lastLoadParams ?: SmolLM.InferenceParams(),
@@ -117,30 +114,41 @@ class LlamaCppEngine {
         onSuccess: () -> Unit = {},
         onError: (Exception) -> Unit = {},
     ) {
-        stateLock.withLock {
-            generationJob?.cancel()
-            isGenerating = false
+        loadModel(
+            modelPath = modelPath,
+            params = params,
+            systemPrompt = systemPrompt,
+            onSuccess = onSuccess,
+            onError = onError,
+        )
+    }
 
-            CoroutineScope(Dispatchers.Default).launch {
-                try {
-                    // Close and reopen — this clears the KV cache and message history
-                    // but the OS keeps model pages in memory so reload is fast
-                    instance.close()
-                    instance = SmolLM()
-                    instance.load(modelPath, params)
+    suspend fun transcribeWav(wav: ByteArray): String = withContext(Dispatchers.IO) {
+        require(wav.isNotEmpty()) { "No recorded audio was supplied" }
+        nativeMutex.withLock {
+            check(isModelLoaded.get()) { "GGUF model is not loaded" }
+            isVoiceBusy = true
+            try {
+                val rate = instance.audioSampleRate()
+                check(rate > 0) { "This GGUF requires an audio-capable mmproj projector" }
+                val samples = WavPcm16.toFloatMono(wav, rate)
+                instance.transcribeAudio(samples).trim()
+                    .ifEmpty { throw IllegalStateException("No Greek transcription was produced") }
+            } finally {
+                isVoiceBusy = false
+            }
+        }
+    }
 
-                    if (systemPrompt.isNotBlank()) {
-                        instance.addSystemPrompt(systemPrompt)
-                    }
-
-                    isModelLoaded.set(true)
-                    withContext(Dispatchers.Main) { onSuccess() }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    isModelLoaded.set(false)
-                    withContext(Dispatchers.Main) { onError(e) }
-                }
+    suspend fun synthesizeSpeech(text: String): ByteArray = withContext(Dispatchers.IO) {
+        require(text.isNotBlank())
+        nativeMutex.withLock {
+            check(isModelLoaded.get()) { "GGUF model is not loaded" }
+            isVoiceBusy = true
+            try {
+                instance.synthesizeSpeech(text)
+            } finally {
+                isVoiceBusy = false
             }
         }
     }
@@ -152,125 +160,89 @@ class LlamaCppEngine {
         onCancelled: () -> Unit,
         onError: (Exception) -> Unit,
     ) {
-        stateLock.withLock {
-            if (!isModelLoaded.get()) {
-                onError(IllegalStateException("Model not loaded"))
-                return
-            }
-
-            generationJob?.cancel()
-
-            generationJob = CoroutineScope(Dispatchers.Default).launch {
-                try {
+        if (!isModelLoaded.get()) {
+            onError(IllegalStateException("Model not loaded"))
+            return
+        }
+        stopGeneration()
+        generationJob = scope.launch {
+            try {
+                val result = nativeMutex.withLock {
+                    check(isModelLoaded.get()) { "Model was unloaded" }
+                    currentCoroutineContext().ensureActive()
                     isGenerating = true
-                    var fullResponse = ""
-                    var lastDisplayed = ""
-
-                    // Stop generation at any of these tokens — covers ChatML (Qwen/Mistral),
-                    // Llama-3 instruct, and generic EOS. Without this the model talks to itself.
+                    val model = instance
                     val stopSequences = listOf(
-                        "<|im_end|>",    // ChatML — Qwen, Mistral, etc.
-                        "<|eot_id|>",    // Llama-3
-                        "<|endoftext|>", // GPT-style EOS
-                        "<|im_start|>",  // Model starting a new turn (should have stopped already)
-                    )
-                    var shouldStop = false
-
+                        "<|im_end|>", "<|eot_id|>", "<|endoftext|>", "<|im_start|>")
+                    val full = StringBuilder()
+                    var emittedLength = 0
+                    var stopped = false
                     val duration = measureTime {
-                        instance.getResponseAsFlow(query)
-                            .takeWhile { !shouldStop }
-                            .collect { piece ->
-                                fullResponse += piece
-
-                                // Detect the earliest stop sequence and truncate
-                                val stopIdx = stopSequences
-                                    .mapNotNull { seq -> fullResponse.indexOf(seq).takeIf { it >= 0 } }
-                                    .minOrNull()
-                                if (stopIdx != null) {
-                                    fullResponse = fullResponse.substring(0, stopIdx)
-                                    shouldStop = true
-                                    return@collect
-                                }
-
-                                // Send only the NEW portion (delta) so the ViewModel can append
-                                // correctly. Sending the full string caused "hello hello hello..."
-                                val displayResponse = cleanModelOutput(fullResponse, isFinal = false)
-                                val delta = if (displayResponse.length > lastDisplayed.length) {
-                                    displayResponse.substring(lastDisplayed.length)
-                                } else ""
-                                lastDisplayed = displayResponse
-
-                                if (delta.isNotEmpty()) {
-                                    withContext(Dispatchers.Main) { onToken(delta) }
-                                }
+                        model.getResponseAsFlow(query).collect { piece ->
+                            currentCoroutineContext().ensureActive()
+                            if (stopped) return@collect
+                            full.append(piece)
+                            val raw = full.toString()
+                            val stopPosition = stopSequences
+                                .mapNotNull { seq -> raw.indexOf(seq).takeIf { it >= 0 } }
+                                .minOrNull()
+                            if (stopPosition != null) {
+                                full.setLength(stopPosition)
+                                stopped = true
                             }
+                            val visible = cleanModelOutput(full.toString(), false)
+                            if (visible.length > emittedLength) {
+                                val delta = visible.substring(emittedLength)
+                                emittedLength = visible.length
+                                withContext(Dispatchers.Main) { onToken(delta) }
+                            }
+                        }
                     }
-
-                    val finalResponse = cleanModelOutput(fullResponse, isFinal = true).ifBlank {
-                        if (fullResponse.isNotBlank()) "(No visible content produced)" else "(Empty response)"
-                    }
-
-                    withContext(Dispatchers.Main) {
-                        isGenerating = false
-                        onComplete(
-                            GenerationResult(
-                                response = finalResponse,
-                                tokensPerSecond = instance.getResponseGenerationSpeed(),
-                                durationSeconds = duration.inWholeSeconds.toInt(),
-                                contextLengthUsed = instance.getContextLengthUsed(),
-                            )
-                        )
-                    }
-                } catch (e: CancellationException) {
-                    isGenerating = false
-                    withContext(Dispatchers.Main) { onCancelled() }
-                } catch (e: Exception) {
-                    isGenerating = false
-                    withContext(Dispatchers.Main) { onError(e) }
+                    GenerationResult(
+                        response = cleanModelOutput(full.toString(), true),
+                        tokensPerSecond = model.getResponseGenerationSpeed(),
+                        durationSeconds = duration.inWholeSeconds.toInt(),
+                        contextLengthUsed = model.getContextLengthUsed(),
+                    )
                 }
+                withContext(Dispatchers.Main) { onComplete(result) }
+            } catch (_: CancellationException) {
+                withContext(NonCancellable + Dispatchers.Main) { onCancelled() }
+            } catch (error: Exception) {
+                withContext(Dispatchers.Main) { onError(error) }
+            } finally {
+                isGenerating = false
             }
         }
     }
 
     private fun cleanModelOutput(raw: String, isFinal: Boolean): String {
-        var cleaned = raw
-            // ChatML tokens (Qwen, Mistral, etc.)
+        var value = raw
             .replace(Regex("<\\|im_start\\|>(system|user|assistant)\\n?", RegexOption.IGNORE_CASE), "")
             .replace("<|im_end|>", "")
             .replace("<|endoftext|>", "")
             .replace("<|eot_id|>", "")
-            // Thinking blocks
             .replace(Regex("<think>.*?</think>", RegexOption.DOT_MATCHES_ALL), "")
             .replace(Regex("<think>.*", RegexOption.DOT_MATCHES_ALL), "")
-            // Gemma turn tokens
             .replace(Regex("<start_of_turn>.*?\\n", RegexOption.IGNORE_CASE), "")
             .replace(Regex("<end_of_turn>", RegexOption.IGNORE_CASE), "")
-            // Misc
             .replace(Regex("<turn\\|.*?\\|>", RegexOption.IGNORE_CASE), "")
-            .replace(Regex("<\\|turn_end\\|>", RegexOption.IGNORE_CASE), "")
             .replace("System instruction:", "")
-
-        if (isFinal) {
-            cleaned = cleaned.replace(Regex("<.*$", RegexOption.IGNORE_CASE), "")
-        }
-
-        return cleaned.trim()
+        if (isFinal) value = value.replace(Regex("<[^>]*$"), "")
+        return value.trim()
     }
 
     fun stopGeneration() {
-        stateLock.withLock {
-            generationJob?.cancel()
-            isGenerating = false
-        }
+        runCatching { instance.requestStop() }
+        generationJob?.cancel()
+        isGenerating = false
     }
 
     fun benchModel(pp: Int = 512, tg: Int = 128, pl: Int = 1, nr: Int = 3): String {
         return if (isModelLoaded.get()) {
             instance.benchModel(pp, tg, pl, nr)
-        } else {
-            "Model not loaded"
-        }
+        } else "Model not loaded"
     }
 
-    fun isReady(): Boolean = isModelLoaded.get() && !isGenerating
+    fun isReady(): Boolean = isModelLoaded.get() && !isGenerating && !isVoiceBusy
 }
