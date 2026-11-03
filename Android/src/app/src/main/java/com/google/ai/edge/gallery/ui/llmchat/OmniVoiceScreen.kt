@@ -442,7 +442,7 @@ fun OmniVoiceScreen(
                         )
                         Text(
                             "Ενεργά prompt threads: " +
-                            (engine.lastLoadParams?.numThreadsBatch ?: "—"),
+                            (engine?.lastLoadParams?.numThreadsBatch ?: "—"),
                             style = MaterialTheme.typography.bodySmall,
                         )
                         Text(

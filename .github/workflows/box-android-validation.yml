@@ -71,6 +71,9 @@ jobs:
           test -s /usr/include/vulkan/vulkan.hpp
           mkdir -p "$RUNNER_TEMP/box-vulkan-headers"
           cp -a /usr/include/vulkan "$RUNNER_TEMP/box-vulkan-headers/"
+          if [ -d /usr/include/vk_video ]; then
+            cp -a /usr/include/vk_video "$RUNNER_TEMP/box-vulkan-headers/"
+          fi
           test -s "$RUNNER_TEMP/box-vulkan-headers/vulkan/vulkan.hpp"
           echo "BOX_VULKAN_HEADERS_DIR=$RUNNER_TEMP/box-vulkan-headers" >> "$GITHUB_ENV"
 
@@ -82,6 +85,15 @@ jobs:
           test -s Android/src/app/src/main/jniLibs/arm64-v8a/libLiteRtCompilerPlugin_MediaTek.so
           file Android/src/app/src/main/jniLibs/arm64-v8a/libLiteRtDispatch_MediaTek.so
           file Android/src/app/src/main/jniLibs/arm64-v8a/libLiteRtCompilerPlugin_MediaTek.so
+
+      - name: Compile Kotlin first to detect UI and JNI bridge errors before native shaders
+        working-directory: Android/src
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew :smollm:compileDebugKotlin :app:compileDebugKotlin \
+            --no-daemon --stacktrace --console=plain --max-workers=2
 
       - name: Build complete Box debug APK (including unchanged LiteRT-LM)
         working-directory: Android/src
