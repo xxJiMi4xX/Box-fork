@@ -57,27 +57,38 @@ object LlamaCppModelHelper : LlmModelHelper {
             topP = topP,
             topK = topK,
             numThreads = VoiceGgufRuntimeSettings.cpuThreads(context, modelPath),
+            numThreadsBatch = VoiceGgufRuntimeSettings.cpuBatchThreads(context, modelPath),
+            numGpuLayers = VoiceGgufRuntimeSettings.gpuLayers(context, modelPath),
+            gpuProjector = VoiceGgufRuntimeSettings.gpuProjector(context, modelPath),
             mmprojPath = projector,
         )
 
-        engine.loadModel(
-            modelPath = modelPath,
-            params = params,
-            onSuccess = {
-                if (engines[model.name] === engine) {
-                    model.instance = engine
-                    onDone("")
-                } else {
-                    engine.unloadModel()
-                }
-            },
-            onError = { e ->
-                if (engines[model.name] === engine) {
-                    Log.e(TAG, "Failed to load GGUF model", e)
-                    onDone(e.message ?: "Failed to load GGUF model")
-                }
-            }
-        )
+        fun loadWith(options: SmolLM.InferenceParams, allowGpuFallback: Boolean) {
+            engine.loadModel(
+                modelPath = modelPath,
+                params = options,
+                onSuccess = {
+                    if (engines[model.name] === engine) {
+                        model.instance = engine
+                        onDone("")
+                    } else {
+                        engine.unloadModel()
+                    }
+                },
+                onError = { e ->
+                    if (engines[model.name] === engine) {
+                        if (allowGpuFallback && options.numGpuLayers != 0) {
+                            Log.w(TAG, "Vulkan GGUF load failed; reverting to CPU", e)
+                            loadWith(options.copy(numGpuLayers = 0, gpuProjector = false), false)
+                        } else {
+                            Log.e(TAG, "Failed to load GGUF model", e)
+                            onDone(e.message ?: "Failed to load GGUF model")
+                        }
+                    }
+                },
+            )
+        }
+        loadWith(params, true)
     }
 
     override fun resetConversation(
