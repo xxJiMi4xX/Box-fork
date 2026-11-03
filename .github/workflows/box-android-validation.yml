@@ -23,7 +23,7 @@ jobs:
 
     steps:
       - name: Checkout fork including pinned upstream submodules
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: recursive
           persist-credentials: false
@@ -37,7 +37,7 @@ jobs:
           grep 'distributionUrl=' Android/src/gradle/wrapper/gradle-wrapper.properties
 
       - name: Install JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'

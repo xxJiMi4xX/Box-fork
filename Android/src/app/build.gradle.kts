@@ -66,6 +66,7 @@ extensions.configure<com.android.build.api.dsl.ApplicationExtension>("android") 
   buildFeatures {
     compose = true
     buildConfig = true
+    resValues = true
   }
 }
 
