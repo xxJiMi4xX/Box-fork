@@ -1,5 +1,10 @@
 package com.google.ai.edge.gallery.ui.llmchat
 
+import android.net.Uri
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +37,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -41,6 +47,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.google.ai.edge.gallery.data.BuiltInTaskId
 import com.google.ai.edge.gallery.data.Model
 import com.google.ai.edge.gallery.data.ModelDownloadStatusType
+import com.google.ai.edge.gallery.proto.ImportedModel
 import com.google.ai.edge.gallery.engine.GgufAudioFiles
 import com.google.ai.edge.gallery.engine.LlamaCppEngine
 import com.google.ai.edge.gallery.ui.common.chat.ChatMessageError
@@ -51,6 +58,9 @@ import com.google.ai.edge.gallery.ui.common.chat.ChatSide
 import com.google.ai.edge.gallery.ui.common.chat.ChatMessage
 import com.google.ai.edge.gallery.ui.modelmanager.ModelInitializationStatusType
 import com.google.ai.edge.gallery.ui.modelmanager.ModelManagerViewModel
+import com.google.ai.edge.gallery.ui.modelmanager.ModelImportDialog
+import com.google.ai.edge.gallery.ui.modelmanager.ModelImportingDialog
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -81,6 +91,30 @@ fun OmniVoiceScreen(
         ?: models.firstOrNull()?.name
     var selectedName by remember { mutableStateOf<String?>(null) }
     var expanded by remember { mutableStateOf(false) }
+    var importUri by remember { mutableStateOf<Uri?>(null) }
+    var importInfo by remember { mutableStateOf<ImportedModel?>(null) }
+    var importStage by remember { mutableStateOf(0) }
+    var importError by remember { mutableStateOf<String?>(null) }
+    val importScope = rememberCoroutineScope()
+    val ggufPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            val displayName = runCatching {
+                context.contentResolver.query(
+                    uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) cursor.getString(0) else null
+                }
+            }.getOrNull()
+            if (displayName?.endsWith(".gguf", ignoreCase = true) != true) {
+                importError = "Επίλεξε αρχείο μοντέλου με κατάληξη .gguf"
+            } else {
+                importError = null
+                importUri = uri
+                importInfo = null
+                importStage = 1
+            }
+        }
+    }
     val selected = models.firstOrNull { it.name == (selectedName ?: firstChoice) }
     val status = selected?.let { manager.modelInitializationStatus[it.name] }
     val isInitialized = status?.status == ModelInitializationStatusType.INITIALIZED
@@ -196,7 +230,9 @@ fun OmniVoiceScreen(
         ) {
             if (selected == null) {
                 Text("Δεν υπάρχει εισαγμένο μοντέλο GGUF για φωνητική συνομιλία.")
-                Button(onClick = onImportModelClicked) { Text("Εισαγωγή μοντέλου GGUF") }
+                Button(onClick = { ggufPicker.launch(arrayOf("*/*")) }) {
+                    Text("Εισαγωγή μοντέλου GGUF")
+                }
             } else {
                 Text("Μοντέλο", style = MaterialTheme.typography.labelLarge)
                 Box {
@@ -217,6 +253,25 @@ fun OmniVoiceScreen(
                             )
                         }
                     }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { ggufPicker.launch(arrayOf("*/*")) }) {
+                        Text("Εισαγωγή GGUF")
+                    }
+                    OutlinedButton(
+                        enabled = task != null &&
+                            download == ModelDownloadStatusType.SUCCEEDED &&
+                            status?.status != ModelInitializationStatusType.INITIALIZING,
+                        onClick = {
+                            task?.let {
+                                viewModel.stopResponse(selected)
+                                modelManagerViewModel.initializeModel(
+                                    context = context, task = it, model = selected, force = true,
+                                )
+                            }
+                        },
+                    ) { Text(if (modelLoaded) "Επαναφόρτωση" else "Φόρτωση") }
                 }
 
                 Text("Κατάσταση ήχου", style = MaterialTheme.typography.titleMedium)
@@ -314,6 +369,38 @@ fun OmniVoiceScreen(
                     }
                 }
             }
+            if (importError != null) {
+                Text(importError!!, color = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
+    val uri = importUri
+    if (uri != null && importStage == 1) {
+        ModelImportDialog(
+            uri = uri,
+            onDismiss = { importStage = 0 },
+            onDone = { info ->
+                importInfo = info
+                importStage = 2
+            },
+        )
+    }
+    if (uri != null && importStage == 2) {
+        importInfo?.let { info ->
+            ModelImportingDialog(
+                uri = uri,
+                info = info,
+                onDismiss = { importStage = 0 },
+                onDone = { completed ->
+                    importScope.launch {
+                        modelManagerViewModel.addImportedLlmModel(completed)
+                        selectedName = completed.fileName
+                        importStage = 0
+                        importUri = null
+                        importInfo = null
+                    }
+                },
+            )
         }
     }
 }
