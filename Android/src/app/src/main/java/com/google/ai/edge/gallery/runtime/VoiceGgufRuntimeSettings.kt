@@ -11,6 +11,7 @@ import android.content.Context
 object VoiceGgufRuntimeSettings {
     private const val PREFS_NAME = "box_voice_gguf_runtime"
     private const val THREADS_PREFIX = "cpu_threads:"
+    private const val MIXED_VOICE_PREFIX = "mixed_voice:"
 
     fun maxCpuThreads(): Int =
         Runtime.getRuntime().availableProcessors().coerceIn(1, 32)
@@ -33,4 +34,16 @@ object VoiceGgufRuntimeSettings {
                 .commit()
         ) { "Failed to save GGUF CPU thread settings" }
     }
+    /** Opt-in until real-device audio correctness is confirmed. */
+    fun mixedVoiceEnabled(context: Context, modelPath: String): Boolean =
+        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(MIXED_VOICE_PREFIX + modelPath, false)
+
+    fun setMixedVoiceEnabled(context: Context, modelPath: String, enabled: Boolean) {
+        check(context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putBoolean(MIXED_VOICE_PREFIX + modelPath, enabled).commit()) {
+            "Failed to save mixed-voice setting"
+        }
+    }
 }
+
