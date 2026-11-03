@@ -27,6 +27,7 @@ class SmolLM {
         val numThreads: Int = 4,
         val useMmap: Boolean = true,
         val useMlock: Boolean = false,
+        val mmprojPath: String? = null,
     )
 
     object DefaultParams {
@@ -55,6 +56,7 @@ class SmolLM {
                 params.numThreads,
                 params.useMmap,
                 params.useMlock,
+                params.mmprojPath ?: "",
                 )
             } finally {
                 ggufReader.close()
@@ -80,6 +82,21 @@ class SmolLM {
 
     fun addAssistantMessage(message: String) {
         addChatMessage("assistant", message)
+    }
+
+    fun audioSampleRate(): Int {
+        verifyHandle()
+        return nativeAudioSampleRate(nativePtr)
+    }
+
+    fun transcribeAudio(pcm: FloatArray): String {
+        verifyHandle()
+        return nativeTranscribeAudio(nativePtr, pcm)
+    }
+
+    fun synthesizeSpeech(text: String): ByteArray {
+        verifyHandle()
+        return nativeSynthesizeSpeech(nativePtr, text)
     }
 
     fun getResponseGenerationSpeed(): Float {
@@ -142,7 +159,7 @@ class SmolLM {
     private external fun loadModel(
         modelPath: String, minP: Float, temperature: Float, topP: Float, topK: Int,
         repeatPenalty: Float, storeChats: Boolean, contextSize: Long, chatTemplate: String,
-        nThreads: Int, useMmap: Boolean, useMlock: Boolean
+        nThreads: Int, useMmap: Boolean, useMlock: Boolean, mmprojPath: String
     ): Long
 
     private external fun addChatMessage(modelPtr: Long, message: String, role: String)
@@ -152,5 +169,8 @@ class SmolLM {
     private external fun startCompletion(modelPtr: Long, prompt: String)
     private external fun completionLoop(modelPtr: Long): String
     private external fun stopCompletion(modelPtr: Long)
+    private external fun nativeAudioSampleRate(modelPtr: Long): Int
+    private external fun nativeTranscribeAudio(modelPtr: Long, pcm: FloatArray): String
+    private external fun nativeSynthesizeSpeech(modelPtr: Long, text: String): ByteArray
     private external fun benchModel(modelPtr: Long, pp: Int, tg: Int, pl: Int, nr: Int): String
 }

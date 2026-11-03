@@ -1,5 +1,7 @@
 #include "LLMInference.h"
 #include "ggml-backend.h"
+#include "mtmd-helper.h"
+#include <memory>
 
 #include <algorithm>
 #include <cmath>
@@ -12,6 +14,7 @@
 LLMInference::~LLMInference() {
     stopRequested_.store(true);
     std::lock_guard<std::mutex> lock(mutex_);
+    if (mmproj_) mtmd_free(mmproj_);
     if (sampler_) llama_sampler_free(sampler_);
     if (context_) llama_free(context_);
     if (model_) llama_model_free(model_);
@@ -20,7 +23,7 @@ LLMInference::~LLMInference() {
 void LLMInference::loadModel(const char *path, float minP, float temperature, float topP,
                              int topK, float repeatPenalty, bool storeChats,
                              long contextSize, const char *chatTemplate,
-                             int nThreads, bool useMmap, bool useMlock) {
+                             int nThreads, bool useMmap, bool useMlock, const char *mmprojPath) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!path || !*path || model_) throw std::invalid_argument("Invalid model path or duplicate load");
     if (!std::isfinite(temperature) || !std::isfinite(minP) || !std::isfinite(topP) ||
@@ -41,6 +44,7 @@ void LLMInference::loadModel(const char *path, float minP, float temperature, fl
     cp.n_threads = nThreads;
     cp.n_threads_batch = nThreads;
     cp.no_perf = true;
+    cp.embeddings = true; // Required for LFM3 audio-generation hidden state.
     context_ = llama_init_from_model(model_, cp);
     if (!context_) throw std::runtime_error("Cannot initialize llama context");
     llama_sampler_chain_params sc = llama_sampler_chain_default_params();
@@ -62,6 +66,13 @@ void LLMInference::loadModel(const char *path, float minP, float temperature, fl
         (modelTemplate ? modelTemplate : "");
     if (chatTemplate_.empty()) throw std::runtime_error("GGUF has no chat template; select a compatible template");
     storeChats_ = storeChats;
+    if (mmprojPath && *mmprojPath) {
+        auto params = mtmd_context_params_default();
+        params.use_gpu = false;
+        params.n_threads = nThreads;
+        mmproj_ = mtmd_init_from_file(mmprojPath, model_, params);
+        if (!mmproj_) throw std::runtime_error("Cannot load the matching mmproj GGUF");
+    }
 }
 
 std::vector<llama_token> LLMInference::tokenize(const std::string &str) {
@@ -227,4 +238,130 @@ std::string LLMInference::benchModel(int, int, int, int) {
     // A synthetic benchmark could corrupt in-flight KV state; fail explicitly until
     // a separate benchmark context is allocated and validated.
     throw std::runtime_error("GGUF benchmark requires a separate context (not enabled in this build)");
+}
+
+int LLMInference::audioInputSampleRate() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return mmproj_ && mtmd_support_audio(mmproj_) ? mtmd_get_audio_sample_rate(mmproj_) : -1;
+}
+
+std::string LLMInference::transcribeAudio(const std::vector<float> &pcm) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!mmproj_ || !mtmd_support_audio(mmproj_))
+        throw std::runtime_error("Audio input requires a compatible mmproj GGUF");
+    if (generating_ || pcm.empty() || pcm.size() > 16000 * 90)
+        throw std::runtime_error("Audio busy, empty or longer than 90 seconds");
+    if (stopRequested_.load()) throw std::runtime_error("Audio task cancelled");
+
+    const std::string sys = "Perform ASR in Greek.";
+    const std::string marker = mtmd_default_marker();
+    const llama_chat_message chat[] = {
+        {"system", sys.c_str()},
+        {"user", marker.c_str()}
+    };
+    int32_t required = llama_chat_apply_template(chatTemplate_.c_str(), chat, 2, true, nullptr, 0);
+    if (required <= 0 || required > 65536)
+        throw std::runtime_error("Cannot render the ASR chat template");
+    std::vector<char> rendered(static_cast<size_t>(required) + 1);
+    int32_t used = llama_chat_apply_template(chatTemplate_.c_str(), chat, 2, true,
+                                              rendered.data(), static_cast<int32_t>(rendered.size()));
+    if (used < 0 || used > required)
+        throw std::runtime_error("Cannot render ASR user prompt");
+    mtmd_bitmap *bitmap = mtmd_bitmap_init_from_audio(pcm.size(), pcm.data());
+    if (!bitmap) throw std::runtime_error("Cannot create audio bitmap");
+    std::unique_ptr<mtmd_bitmap, decltype(&mtmd_bitmap_free)> bitmapHolder(bitmap, mtmd_bitmap_free);
+    mtmd_input_chunks *chunks = mtmd_input_chunks_init();
+    if (!chunks) throw std::runtime_error("Cannot allocate audio chunks");
+    std::unique_ptr<mtmd_input_chunks, decltype(&mtmd_input_chunks_free)> chunkHolder(chunks, mtmd_input_chunks_free);
+    mtmd_input_text text = {rendered.data(), static_cast<size_t>(used), true, true};
+    const mtmd_bitmap *ptr = bitmap;
+    if (mtmd_tokenize(mmproj_, chunks, &text, &ptr, 1) != 0)
+        throw std::runtime_error("Audio preprocessing failed");
+    if (mtmd_helper_get_n_tokens(chunks) + 1 > llama_n_ctx(context_))
+        throw std::runtime_error("Audio input exceeds context window");
+
+    llama_memory_clear(llama_get_memory(context_), false);
+    llama_sampler_reset(sampler_);
+    llama_pos nPast = 0;
+    if (mtmd_helper_eval_chunks(mmproj_, context_, chunks, 0, 0,
+        static_cast<int32_t>(llama_n_batch(context_)), true, &nPast) != 0)
+        throw std::runtime_error("Audio encoder/decoder failed");
+    std::string transcript;
+    for (int i = 0; i < 512 && nPast + 1 < static_cast<llama_pos>(llama_n_ctx(context_)); ++i) {
+        if (stopRequested_.load()) throw std::runtime_error("Transcription interrupted");
+        const llama_token tok = llama_sampler_sample(sampler_, context_, -1);
+        if (llama_vocab_is_eog(llama_model_get_vocab(model_), tok)) break;
+        transcript += tokenToPiece(tok);
+        llama_token mutableToken = tok;
+        if (llama_decode(context_, llama_batch_get_one(&mutableToken, 1)) != 0)
+            throw std::runtime_error("ASR decode failed");
+        ++nPast;
+    }
+    llama_memory_clear(llama_get_memory(context_), false);
+    llama_sampler_reset(sampler_);
+    if (transcript.empty()) throw std::runtime_error("No audio transcript produced");
+    return transcript;
+}
+
+std::vector<uint8_t> LLMInference::synthesizeSpeech(const std::string &text) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!mmproj_ || mtmd_gen_audio_get_info(mmproj_).type == MTMD_GEN_AUDIO_TYPE_NONE)
+        throw std::runtime_error("Audio synthesis requires a compatible mmproj GGUF");
+    if (generating_ || text.empty() || text.size() > 16384)
+        throw std::runtime_error("Speech generation unavailable or input too long");
+    const char *ttsTemplate = llama_model_chat_template(model_, "tts");
+    if (!ttsTemplate || !*ttsTemplate)
+        throw std::runtime_error("The GGUF does not define an LFM3 TTS template");
+    const std::string system = "Perform TTS in Greek using a female voice.";
+    const llama_chat_message chat[] = {{"system", system.c_str()}, {"user", text.c_str()}};
+    int32_t required = llama_chat_apply_template(ttsTemplate, chat, 2, true, nullptr, 0);
+    if (required <= 0 || required > 65536)
+        throw std::runtime_error("Cannot render TTS template");
+    std::vector<char> prompt(static_cast<size_t>(required) + 1);
+    int32_t used = llama_chat_apply_template(ttsTemplate, chat, 2, true,
+                                               prompt.data(), static_cast<int32_t>(prompt.size()));
+    if (used <= 0 || used > required) throw std::runtime_error("Cannot render TTS prompt");
+    llama_memory_clear(llama_get_memory(context_), false);
+    llama_sampler_reset(sampler_);
+    auto *gen = mtmd_helper_gen_audio_init(context_, mmproj_);
+    if (!gen) throw std::runtime_error("Cannot initialize audio generator");
+    std::unique_ptr<mtmd_helper_gen_audio, decltype(&mtmd_helper_gen_audio_free)> holder(
+        gen, mtmd_helper_gen_audio_free);
+    const std::string promptStr(prompt.data(), static_cast<size_t>(used));
+    auto inp = mtmd_helper_gen_audio_inp_default();
+    inp.prompt = promptStr.c_str();
+    inp.prompt_len = promptStr.size();
+    inp.lang = "el";
+    inp.voice = "female";
+    inp.out_type = MTMD_HELPER_GEN_AUDIO_OUTTYPE_WAV;
+    inp.stream = false;
+    if (mtmd_helper_gen_audio_set_input(gen, &inp) != 0)
+        throw std::runtime_error("Cannot initialize Greek speech request");
+    for (;;) {
+        if (stopRequested_.load()) throw std::runtime_error("Speech generation cancelled");
+        const int32_t left = mtmd_helper_gen_audio_step_prompt(
+            gen, static_cast<int32_t>(llama_n_batch(context_)));
+        if (left < 0) throw std::runtime_error("Speech prompt encoding failed");
+        if (left == 0) break;
+    }
+    llama_token semantic = llama_sampler_sample(sampler_, context_, -1);
+    const float *hidden = llama_get_embeddings_ith(context_, -1);
+    bool done = false;
+    for (int frames = 0; frames < 512 && !done; ++frames) {
+        if (stopRequested_.load()) throw std::runtime_error("Speech generation cancelled");
+        const float *nextHidden = nullptr;
+        if (mtmd_helper_gen_audio_step_gen(gen, semantic, hidden, &nextHidden, &done) != 0)
+            throw std::runtime_error("Audio codec generation failed");
+        if (!nextHidden) break;
+        hidden = nextHidden;
+        semantic = llama_sampler_sample(sampler_, context_, -1);
+    }
+    int32_t rate = 0;
+    const char *bytes = nullptr;
+    size_t size = 0;
+    if (mtmd_helper_gen_audio_get_output(gen, &rate, &bytes, &size, nullptr) != 0 ||
+        rate <= 0 || !bytes || size < 44 || size > 16 * 1024 * 1024)
+        throw std::runtime_error("Invalid synthesized WAV output");
+    return std::vector<uint8_t>(reinterpret_cast<const uint8_t *>(bytes),
+                                reinterpret_cast<const uint8_t *>(bytes) + size);
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "llama.h"
+#include "mtmd.h"
 
 #include <atomic>
 #include <cstdint>
@@ -19,7 +20,7 @@ public:
 
     void loadModel(const char *path, float minP, float temperature, float topP, int topK,
                    float repeatPenalty, bool storeChats, long contextSize,
-                   const char *chatTemplate, int nThreads, bool useMmap, bool useMlock);
+                   const char *chatTemplate, int nThreads, bool useMmap, bool useMlock, const char *mmprojPath);
     void addChatMessage(const char *message, const char *role);
     float getResponseGenerationTime();
     int getContextSizeUsed();
@@ -28,6 +29,9 @@ public:
     void requestStop() noexcept;
     void stopCompletion();
     std::string benchModel(int pp, int tg, int pl, int nr);
+    int audioInputSampleRate();
+    std::string transcribeAudio(const std::vector<float> &pcm);
+    std::vector<uint8_t> synthesizeSpeech(const std::string &text);
 
 private:
     std::mutex mutex_;
@@ -35,6 +39,7 @@ private:
     llama_model *model_ = nullptr;
     llama_context *context_ = nullptr;
     llama_sampler *sampler_ = nullptr;
+    mtmd_context *mmproj_ = nullptr;
     std::string chatTemplate_;
     std::vector<std::pair<std::string, std::string>> messages_;
     std::string response_;
