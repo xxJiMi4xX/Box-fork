@@ -1,49 +1,52 @@
-#ifndef LLMINFERENCE_H
-#define LLMINFERENCE_H
+#pragma once
 
 #include "llama.h"
-#include "common.h"
-#include "ggml.h"
+
+#include <atomic>
+#include <cstdint>
+#include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 class LLMInference {
 public:
-    void loadModel(const char *model_path, float minP, float temperature, float topP, int topK,
-                   float repeatPenalty, bool storeChats, long contextSize, const char *chatTemplate,
-                   int nThreads, bool useMmap, bool useMlock);
-    void addChatMessage(const char *message, const char *role);
-    float getResponseGenerationTime() const;
-    int getContextSizeUsed() const;
-    void startCompletion(const char *query);
-    std::string completionLoop();
-    void stopCompletion();
-    std::string benchModel(int pp, int tg, int pl, int nr);
+    LLMInference() = default;
     ~LLMInference();
 
+    LLMInference(const LLMInference &) = delete;
+    LLMInference &operator=(const LLMInference &) = delete;
+
+    void loadModel(const char *path, float minP, float temperature, float topP, int topK,
+                   float repeatPenalty, bool storeChats, long contextSize,
+                   const char *chatTemplate, int nThreads, bool useMmap, bool useMlock);
+    void addChatMessage(const char *message, const char *role);
+    float getResponseGenerationTime();
+    int getContextSizeUsed();
+    void startCompletion(const char *query);
+    std::string completionLoop();
+    void requestStop() noexcept;
+    void stopCompletion();
+    std::string benchModel(int pp, int tg, int pl, int nr);
+
 private:
-    llama_model *_model = nullptr;
-    llama_context *_ctx = nullptr;
-    llama_sampler *_sampler = nullptr;
-    llama_batch *_batch = nullptr;
-    llama_token _currToken;
+    std::mutex mutex_;
+    std::atomic<bool> stopRequested_{false};
+    llama_model *model_ = nullptr;
+    llama_context *context_ = nullptr;
+    llama_sampler *sampler_ = nullptr;
+    std::string chatTemplate_;
+    std::vector<std::pair<std::string, std::string>> messages_;
+    std::string response_;
+    std::string pendingUtf8_;
+    bool storeChats_ = true;
+    bool generating_ = false;
+    int contextUsed_ = 0;
+    int responseTokens_ = 0;
+    int64_t responseTimeUs_ = 0;
 
-    std::vector<llama_chat_message> _messages;
-    std::vector<char> _formattedMessages;
-    std::vector<llama_token> _promptTokens;
-    std::string _response;
-    std::string _cacheResponseTokens;
-    const char *_chatTemplate = nullptr;
-    bool _storeChats = true;
-    std::string _assistantRole = "assistant";
-
-    int64_t _responseGenerationTime = 0;
-    int _responseNumTokens = 0;
-    int _nCtxUsed = 0;
-
-    llama_batch g_batch;
-
-    static bool _isValidUtf8(const char *response);
+    std::vector<llama_token> tokenize(const std::string &str);
+    std::string tokenToPiece(llama_token token);
+    void finishGeneration();
+    static bool validUtf8(const std::string &bytes);
 };
-
-#endif // LLMINFERENCE_H
