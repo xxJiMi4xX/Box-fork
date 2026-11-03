@@ -211,9 +211,13 @@ void LLMInference::startCompletion(const char *query) {
     };
 
     auto tokens = renderConversation();
-    // Preserve the system instruction and most recent user turn. When the chat
-    // reaches the context boundary, evict oldest complete user/assistant turns.
-    while (!tokens.empty() && tokens.size() + 1 > llama_n_ctx(context_)) {
+    // Reserve room for a useful response rather than filling n_ctx with a
+    // prompt that can never produce a complete answer.
+    const size_t reserve = std::min<size_t>(
+        256, std::max<size_t>(8, static_cast<size_t>(llama_n_ctx(context_)) / 16));
+    // Preserve the system instruction and the newest user turn.
+    while (!tokens.empty() &&
+           tokens.size() + reserve > static_cast<size_t>(llama_n_ctx(context_))) {
         size_t oldest = !messages_.empty() && messages_.front().first == "system" ? 1 : 0;
         if (oldest >= messages_.size() - 1)
             throw std::runtime_error("Latest turn is larger than the GGUF context window");
@@ -303,8 +307,10 @@ std::optional<std::string> LLMInference::completionLoop() {
         return std::nullopt;
     }
     if (contextUsed_ + 1 >= static_cast<int>(llama_n_ctx(context_))) {
-        finishGeneration(true);
-        return std::nullopt;
+        // This is a truncation, never a successful assistant turn. Keep
+        // Room/native history consistent by rolling back the unfinished turn.
+        finishGeneration(false);
+        throw std::runtime_error("GGUF context window exhausted before response completion");
     }
     int64_t start = llama_time_us();
     llama_token token = llama_sampler_sample(sampler_, context_, -1);
