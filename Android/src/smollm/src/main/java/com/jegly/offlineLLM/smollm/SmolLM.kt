@@ -51,7 +51,8 @@ class SmolLM {
                 params.topK,
                 params.repeatPenalty,
                 params.storeChats,
-                (params.contextSize ?: modelContextSize).coerceIn(256L, 8192L),
+                (params.contextSize ?: DefaultParams.CONTEXT_SIZE)
+                    .coerceIn(256L, minOf(8192L, modelContextSize.coerceAtLeast(256L))),
                 params.chatTemplate ?: modelChatTemplate,
                 params.numThreads,
                 params.useMmap,
