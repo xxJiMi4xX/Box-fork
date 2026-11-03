@@ -26,7 +26,7 @@ class WavPcm16Test {
         data.putShort(16)
         data.put("data".toByteArray(Charsets.US_ASCII))
         data.putInt(n)
-        samples.forEach(data::putShort)
+        samples.forEach { data.putShort(it) }
         return data.array()
     }
 
