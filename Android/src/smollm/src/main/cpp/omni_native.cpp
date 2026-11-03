@@ -295,6 +295,11 @@ public:
                     throw std::runtime_error("Prompt decoding failed");
                 }
             }
+            // Initialize repetition-penalty history from the rendered prompt,
+            // then extend it with each sampled token in next().
+            for (const auto token : tokens) {
+                llama_sampler_accept(sampler_.get(), token);
+            }
             decodedPosition_ = n;
             hasLogits_ = true;
         } catch (...) {
