@@ -448,6 +448,11 @@ fun OmniVoiceScreen(
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
+                    if (modelLoaded && !engine?.hardwareInfo.isNullOrBlank()) {
+                        Text("Ανίχνευση συσκευής", style = MaterialTheme.typography.labelLarge)
+                        Text(engine?.hardwareInfo.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall)
+                    }
                     if (runtimeError != null) {
                         Text(runtimeError!!, color = MaterialTheme.colorScheme.error)
                     }
