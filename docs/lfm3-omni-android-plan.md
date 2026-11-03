@@ -67,6 +67,18 @@ Total estimated engineering budget: **39-69 hours**, excluding optional GPU acce
 - Google: load and infer with one compatible LiteRT-LM model; regression of original UI/features.
 - Device: actual Android arm64 phone. CI cannot verify microphone, playback, GPU/SoC behavior, thermal response, or model language quality.
 
+## Deferred MediaTek NPU phase — after LFM3-Omni completion
+
+- Goal: accelerate Google AI Edge LiteRT-LM models on the MediaTek Dimensity 8300-Ultra APU/NPU (MT6897), without affecting llama.cpp/GGUF.
+- Do not attempt this until the GGUF baseline and multimodal pipeline are stable.
+- Google's *LiteRT* MediaTek supported SoC list includes MT6897; this does not prove a compatible *LiteRT-LM* NPU LLM model is currently published for this exact SoC. NPU-compiled LLM bundles may be SoC-specific.
+- Read the SoC identifier and actual available NeuroPilot/driver versions on-device, and check LiteRT-LM MediaTek compiler/dispatch native libraries.
+- Use an explicitly MT6897-compatible LLM NPU bundle; do not interpret selecting Backend.NPU on an arbitrary CPU/GPU model as acceleration.
+- Check real NPU execution from runtime traces and compare CPU/GPU/NPU with multiple consecutive turns, cleanup/reload and energy/latency metrics; retain fallbacks.
+- Preserve the current LiteRT-LM 0.10.0 until a distinct compatibility-driven upgrade is approved and verified.
+- Estimated future engineering budget: **12 hours** total (hardware/runtime 2 h, compatible model validation 3 h, code integration 4 h, real-device regression/benchmarks 3 h). Converting a new SoC-specific model is a separate scope, not included.
+- References: https://developers.google.com/edge/litert/next/mediatek and https://developers.google.com/edge/litert/next/litert_lm_npu
+
 ## Known blockers / caveats
 
 - No successful Android APK build has been observed on this fork before the baseline run.
