@@ -49,6 +49,8 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeout
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.withContext
@@ -70,6 +72,8 @@ open class LlmChatViewModelBase() : ChatViewModel() {
   @Volatile private var selectedConversationModel: String = ""
   private val conversationMutex = Mutex()
   private var lastCommitJob: Job? = null
+  private val historyGates = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
+  private val historyErrors = ConcurrentHashMap<String, String>()
   private val voicePlayback = OmniVoicePlayback()
   private var voicePlaybackJob: Job? = null
   private var activeResponseJob: Job? = null
@@ -128,6 +132,69 @@ open class LlmChatViewModelBase() : ChatViewModel() {
 
   fun beginNewConversation(model: Model) {
     conversationIds.remove(model.name)
+    historyErrors.remove(model.name)
+  }
+
+  fun beginHistorySynchronization(model: Model) {
+    historyErrors.remove(model.name)
+    historyGates.put(model.name, CompletableDeferred())?.complete(Unit)
+  }
+
+  fun endHistorySynchronization(model: Model, error: String? = null) {
+    if (!error.isNullOrBlank()) {
+      historyErrors[model.name] = error
+      reportVoiceError(model, "Η επαναφορά συνομιλίας απέτυχε: $error")
+    }
+    historyGates[model.name]?.complete(Unit)
+  }
+
+  /**
+   * Replays durable paired messages before inference may use the GGUF. Room
+   * may contain legacy unmatched turns from older builds; those are visible
+   * in the UI but are not inserted into the native active dialogue.
+   */
+  suspend fun restoreGgufHistory(
+    model: Model,
+    prompt: String,
+    history: List<Pair<String, String>>,
+  ) {
+    val engine = withTimeout(60_000L) {
+      while (true) {
+        val current = model.instance as? LlamaCppEngine
+        if (current != null && current.isModelLoaded.get()) return@withTimeout current
+        delay(100)
+      }
+      error("Unreachable")
+    }
+    val paired = mutableListOf<Pair<String, String>>()
+    var pendingUser: String? = null
+    for ((role, text) in history) {
+      when (role) {
+        "user" -> pendingUser = text
+        "assistant" -> {
+          val user = pendingUser
+          if (user != null) {
+            paired += "user" to user
+            paired += "assistant" to text
+            pendingUser = null
+          }
+        }
+      }
+    }
+    val window = paired.takeLast(200)
+    engine.restoreConversation(prompt, window)
+    if (window.size != history.size) {
+      reportVoiceError(
+        model,
+        "Το πλήρες ιστορικό παραμένει αποθηκευμένο, αλλά μόνο οι τελευταίοι ολοκληρωμένοι γύροι χρησιμοποιούνται στο ενεργό context."
+      )
+    }
+  }
+
+  private suspend fun requireHistoryReady(model: Model) {
+    historyGates[model.name]?.await()
+    val failure = historyErrors[model.name]
+    check(failure == null) { "Η συνομιλία δεν έχει αποκατασταθεί: $failure" }
   }
 
   private suspend fun ensureConversationId(model: Model): String =
@@ -342,6 +409,21 @@ open class LlmChatViewModelBase() : ChatViewModel() {
         return@launch
       }
       delay(100)
+      if (requestEpoch.get() != epoch) return@launch
+      if (model.instance is LlamaCppEngine) {
+        try {
+          requireHistoryReady(model)
+        } catch (cancelled: CancellationException) {
+          throw cancelled
+        } catch (error: Exception) {
+          if (requestEpoch.get() == epoch) {
+            setInProgress(false)
+            setPreparing(false)
+            reportVoiceError(model, error.message ?: "Η συνεδρία δεν είναι έτοιμη")
+          }
+          return@launch
+        }
+      }
       if (requestEpoch.get() != epoch) return@launch
       if (input.isNotEmpty() && model.instance !is LlamaCppEngine) {
         persistUserMessage(model, input)
