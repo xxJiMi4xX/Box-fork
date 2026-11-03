@@ -84,6 +84,11 @@ class SmolLM {
         addChatMessage("assistant", message)
     }
 
+    fun requestStop() {
+        val handle = nativePtr
+        if (handle != 0L) nativeRequestStop(handle)
+    }
+
     fun audioSampleRate(): Int {
         verifyHandle()
         return nativeAudioSampleRate(nativePtr)
@@ -127,15 +132,19 @@ class SmolLM {
 
     fun getResponse(query: String): String {
         verifyHandle()
-        startCompletion(nativePtr, query)
-        var piece = completionLoop(nativePtr)
-        var response = ""
-        while (piece != "[EOG]") {
-            response += piece
-            piece = completionLoop(nativePtr)
+        val handle = nativePtr
+        try {
+            startCompletion(handle, query)
+            return buildString {
+                var piece = completionLoop(handle)
+                while (piece != "[EOG]") {
+                    append(piece)
+                    piece = completionLoop(handle)
+                }
+            }
+        } finally {
+            if (nativePtr == handle) stopCompletion(handle)
         }
-        stopCompletion(nativePtr)
-        return response
     }
 
     fun benchModel(pp: Int, tg: Int, pl: Int, nr: Int): String {
@@ -169,6 +178,7 @@ class SmolLM {
     private external fun startCompletion(modelPtr: Long, prompt: String)
     private external fun completionLoop(modelPtr: Long): String
     private external fun stopCompletion(modelPtr: Long)
+    private external fun nativeRequestStop(modelPtr: Long)
     private external fun nativeAudioSampleRate(modelPtr: Long): Int
     private external fun nativeTranscribeAudio(modelPtr: Long, pcm: FloatArray): String
     private external fun nativeSynthesizeSpeech(modelPtr: Long, text: String): ByteArray

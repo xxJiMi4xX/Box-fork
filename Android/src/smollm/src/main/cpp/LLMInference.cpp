@@ -2,6 +2,7 @@
 #include "ggml-backend.h"
 #include "mtmd-helper.h"
 #include <memory>
+#include <mutex>
 
 #include <algorithm>
 #include <cmath>
@@ -30,7 +31,11 @@ void LLMInference::loadModel(const char *path, float minP, float temperature, fl
         !std::isfinite(repeatPenalty)) throw std::invalid_argument("Invalid sampling configuration");
     if (contextSize < 256 || contextSize > 8192 || nThreads < 1 || nThreads > 32)
         throw std::invalid_argument("Context must be 256..8192; threads 1..32");
-    ggml_backend_load_all();
+    static std::once_flag initOnce;
+    std::call_once(initOnce, [] {
+        llama_backend_init();
+        ggml_backend_load_all();
+    });
     llama_model_params mp = llama_model_default_params();
     mp.n_gpu_layers = 0; // Verified CPU baseline; add Vulkan only after stability.
     mp.load_mode = useMmap
@@ -250,9 +255,9 @@ std::string LLMInference::transcribeAudio(const std::vector<float> &pcm) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!mmproj_ || !mtmd_support_audio(mmproj_))
         throw std::runtime_error("Audio input requires a compatible mmproj GGUF");
-    if (generating_ || pcm.empty() || pcm.size() > 16000 * 90)
+    if (generating_ || pcm.empty() || pcm.size() > static_cast<size_t>(mtmd_get_audio_sample_rate(mmproj_)) * 90)
         throw std::runtime_error("Audio busy, empty or longer than 90 seconds");
-    if (stopRequested_.load()) throw std::runtime_error("Audio task cancelled");
+    stopRequested_.store(false);
 
     const std::string sys = "Perform ASR in Greek.";
     const std::string marker = mtmd_default_marker();
@@ -310,25 +315,31 @@ std::vector<uint8_t> LLMInference::synthesizeSpeech(const std::string &text) {
         throw std::runtime_error("Audio synthesis requires a compatible mmproj GGUF");
     if (generating_ || text.empty() || text.size() > 16384)
         throw std::runtime_error("Speech generation unavailable or input too long");
-    const char *ttsTemplate = llama_model_chat_template(model_, "tts");
-    if (!ttsTemplate || !*ttsTemplate)
-        throw std::runtime_error("The GGUF does not define an LFM3 TTS template");
+    // LFM3-Omni's audio generation requires the dedicated audio-start token,
+    // not a normal chat response. Render the regular model chat structure first.
+    const auto caps = mtmd_gen_audio_get_info(mmproj_);
+    if (caps.type != MTMD_GEN_AUDIO_TYPE_LFM3A)
+        throw std::runtime_error("This Greek voice mode requires an LFM3-Audio/Omni projector");
+    stopRequested_.store(false);
     const std::string system = "Perform TTS in Greek using a female voice.";
     const llama_chat_message chat[] = {{"system", system.c_str()}, {"user", text.c_str()}};
-    int32_t required = llama_chat_apply_template(ttsTemplate, chat, 2, true, nullptr, 0);
+    const int32_t required = llama_chat_apply_template(chatTemplate_.c_str(),
+                                                         chat, 2, true, nullptr, 0);
     if (required <= 0 || required > 65536)
-        throw std::runtime_error("Cannot render TTS template");
-    std::vector<char> prompt(static_cast<size_t>(required) + 1);
-    int32_t used = llama_chat_apply_template(ttsTemplate, chat, 2, true,
-                                               prompt.data(), static_cast<int32_t>(prompt.size()));
-    if (used <= 0 || used > required) throw std::runtime_error("Cannot render TTS prompt");
+        throw std::runtime_error("Cannot render LFM3 speech request");
+    std::vector<char> rendered(static_cast<size_t>(required) + 1, '\0');
+    const int32_t used = llama_chat_apply_template(chatTemplate_.c_str(), chat, 2,
+                                                     true, rendered.data(), static_cast<int32_t>(rendered.size()));
+    if (used <= 0 || used > required)
+        throw std::runtime_error("Cannot render LFM3 speech request");
+    std::string promptStr(rendered.data(), static_cast<size_t>(used));
+    promptStr += "<|audio_start|>";
     llama_memory_clear(llama_get_memory(context_), false);
     llama_sampler_reset(sampler_);
     auto *gen = mtmd_helper_gen_audio_init(context_, mmproj_);
     if (!gen) throw std::runtime_error("Cannot initialize audio generator");
     std::unique_ptr<mtmd_helper_gen_audio, decltype(&mtmd_helper_gen_audio_free)> holder(
         gen, mtmd_helper_gen_audio_free);
-    const std::string promptStr(prompt.data(), static_cast<size_t>(used));
     auto inp = mtmd_helper_gen_audio_inp_default();
     inp.prompt = promptStr.c_str();
     inp.prompt_len = promptStr.size();

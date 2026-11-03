@@ -178,3 +178,9 @@ Java_com_jegly_offlineLLM_smollm_SmolLM_nativeSynthesizeSpeech(
     });
     return result;
 }
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_jegly_offlineLLM_smollm_SmolLM_nativeRequestStop(
+    JNIEnv *env, jobject, jlong id) {
+    checked(env, [&] { getInstance(id)->requestStop(); });
+}
