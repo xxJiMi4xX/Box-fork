@@ -21,6 +21,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.max
 import kotlin.math.sqrt
 
@@ -33,6 +34,8 @@ import kotlin.math.sqrt
  */
 class OmniLiveVoiceController(private val context: Context) {
     companion object {
+        /** Used by playback to avoid stealing focus from an active voice capture. */
+        val activeMicrophones = AtomicInteger(0)
         const val SAMPLE_RATE = 16000
         private const val FRAME_MS = 20
         private const val FRAME_BYTES = SAMPLE_RATE * FRAME_MS / 1000 * 2
@@ -90,47 +93,54 @@ class OmniLiveVoiceController(private val context: Context) {
             var suppressor: NoiseSuppressor? = null
             var focus: AudioFocusRequest? = null
             var record: AudioRecord? = null
+            var counted = false
             try {
-                focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+                val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
                     .setAudioAttributes(attributes)
                     .setWillPauseWhenDucked(true)
                     .setOnAudioFocusChangeListener { change ->
-                        if (change <= AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) stop()
+                        if (change == AudioManager.AUDIOFOCUS_LOSS ||
+                            change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT ||
+                            change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) stop()
                     }
                     .build()
-                val focusResult = audioManager.requestAudioFocus(focus)
+                focus = request
+                val focusResult = audioManager.requestAudioFocus(request)
                 check(focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
                     "Το μικρόφωνο δεν απέκτησε προτεραιότητα ήχου"
                 }
                 val minBuffer = AudioRecord.getMinBufferSize(
                     SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
                 check(minBuffer > 0) { "Το κινητό δεν υποστηρίζει εγγραφή PCM16 στα 16 kHz" }
-                record = AudioRecord(
+                val audioRecord = AudioRecord(
                     MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                     SAMPLE_RATE,
                     AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT,
                     max(minBuffer, FRAME_BYTES * 4))
-                check(record.state == AudioRecord.STATE_INITIALIZED) {
+                record = audioRecord
+                check(audioRecord.state == AudioRecord.STATE_INITIALIZED) {
                     "Η αρχικοποίηση του μικροφώνου απέτυχε"
                 }
                 if (AcousticEchoCanceler.isAvailable()) {
-                    echo = AcousticEchoCanceler.create(record.audioSessionId)
+                    echo = AcousticEchoCanceler.create(audioRecord.audioSessionId)
                     runCatching { echo?.enabled = true }
                 }
                 if (NoiseSuppressor.isAvailable()) {
-                    suppressor = NoiseSuppressor.create(record.audioSessionId)
+                    suppressor = NoiseSuppressor.create(audioRecord.audioSessionId)
                     runCatching { suppressor?.enabled = true }
                 }
+                if (!currentCoroutineContext().isActive) return@launch
                 synchronized(lock) {
-                    if (!currentCoroutineContext().isActive) return@launch
-                    recorder = record
-                    focusRequest = focus
+                    recorder = audioRecord
+                    focusRequest = request
                 }
-                record.startRecording()
-                check(record.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                audioRecord.startRecording()
+                check(audioRecord.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                     "Η καταγραφή ήχου δεν ξεκίνησε"
                 }
+                activeMicrophones.incrementAndGet()
+                counted = true
 
                 val frame = ByteArray(FRAME_BYTES)
                 val preRoll = ArrayDeque<ByteArray>(PRE_ROLL_FRAMES + 1)
@@ -143,7 +153,7 @@ class OmniLiveVoiceController(private val context: Context) {
                 var inSpeech = false
 
                 while (currentCoroutineContext().isActive) {
-                    val read = record.read(frame, 0, frame.size, AudioRecord.READ_BLOCKING)
+                    val read = audioRecord.read(frame, 0, frame.size, AudioRecord.READ_BLOCKING)
                     if (read < 0) throw IllegalStateException("Η ηχογράφηση διακόπηκε: $read")
                     if (read < 2) continue
                     val available = read and -2
@@ -205,6 +215,7 @@ class OmniLiveVoiceController(private val context: Context) {
                     onError(error.message ?: "Σφάλμα μικροφώνου")
                 }
             } finally {
+                if (counted) activeMicrophones.decrementAndGet()
                 synchronized(lock) {
                     if (recorder === record) recorder = null
                     if (focusRequest === focus) focusRequest = null
