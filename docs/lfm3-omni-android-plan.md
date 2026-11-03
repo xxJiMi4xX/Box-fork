@@ -176,3 +176,68 @@ the user requested implementation through stage 5, not a final APK.
 - TTS WAV sample rate and playback; stop during ASR, text and TTS
 - Model reload, interrupted import, missing/incompatible projector
 - LiteRT-LM and MediaTek dispatch regressions against stable main
+
+
+## Continuous Greek voice mode: source implementation checkpoint (3 Nov 2026)
+
+All work below is on `feature/lfm3-omni-audio-stage`. No APK was built or
+installed for this branch; no native Kotlin/C++ compilation or Android
+device tests were executed in this phase.
+
+### Added beyond basic push-to-talk
+
+- **Opt-in live microphone:** `OmniLiveVoicePanel`, integrated into the
+  LLM Chat screen for a GGUF with a matching `mmproj`. Android RECORD_AUDIO
+  permission is requested through Activity Result APIs. The controller stops
+  when the screen is paused/disposed and does not implement background capture.
+- **Adaptive VAD:** `OmniLiveVoiceController` uses the 16-kHz mono PCM16
+  `AudioRecord` VOICE_COMMUNICATION path, RMS energy and a continuously
+  updated noise threshold, approximately 300 ms pre-roll, speech onset
+  debounce, ~720 ms of silence to end a turn, and a bounded ~24-second
+  utterance. It dispatches the same audio/ASR -> normal LLM reasoning ->
+  generated WAV pipeline used for push-to-talk.
+- **Barge-in:** when speech begins, pending model output, native inference,
+  synthesizer and AudioTrack playback are signaled to stop. NoiseSuppressor
+  and AcousticEchoCanceler are enabled if the Android audio session supports
+  them. With headphones, interruption is enabled even if AEC is unavailable.
+  Without either headphones or functioning AEC, capture is gated during
+  playback to avoid hearing the assistant's own voice. This is hardware-
+  dependent; source alone cannot prove reliable barge-in.
+- **Audio focus:** continuous capture requests transient exclusive focus;
+  isolated TTS playback requests its own temporary focus only when no
+  continuous capture is running. External focus loss stops voice capture
+  or playback. AudioTrack uses speech-specific Android AudioAttributes.
+- **Race/cancellation robustness:** obsolete ASR/TTS callbacks are rejected
+  using a request epoch; model load/unload callbacks are guarded against
+  stale model instances. A cross-engine teardown barrier ensures old native
+  model handles have been released before subsequent loading. Interrupted
+  voice tasks do not overwrite a newer turn's UI state. JNI converts between
+  real UTF-8 and UTF-16 so Greek and supplementary Unicode can travel safely.
+- **Native ASR:** a greedy sampler is used for transcription independently of
+  the chat model's creative sampling settings; control tokens are excluded.
+  Failed chat-template/prefill operations roll back conversation history.
+- **Session recovery:** reset retries are bounded to three, with a visible
+  error instead of an unbounded loop. Projector file import uses an
+  app-private destination and atomic file replacement.
+
+### Usage once a build is explicitly authorized
+
+Select the LFM3-Omni-2B GGUF in Box LLM Chat, import the matching
+`mmproj-LFM3-Omni-2B-*.gguf` sidecar if needed, and either use the existing
+voice-record button for one turn or select **Συνεχής φωνή**. The live mode
+continues listening while the chat remains in the foreground; detected speech
+triggers a new conversation turn, then Greek output speech. A manual stop
+button exits the live mode. Original Google LiteRT-LM routing is unchanged.
+
+### Remaining validation / disclosure
+
+This branch has **source implementation, not a proven working build**.
+The earlier text-only `feature/lfm3-omni-android` JNI baseline did pass the
+CI build (run 41687371935), but it does not compile or validate this branch.
+No production-quality assurance is possible without at minimum:
+Android C++/JNI/Kotlin compilation and tests on the actual device, 16-kHz
+speech tests, real Greek TTS audio inspection, headset/speaker AEC and VAD
+validation, stop/restart and memory-pressure tests, plus LiteRT-LM regression.
+The original stage-6 verification estimate remains 6–10 engineering hours,
+subject to additional corrections if failures emerge. The final APK stage
+remains explicitly outside the current user's authorization.
