@@ -8,6 +8,7 @@ import com.google.ai.edge.gallery.data.DEFAULT_TEMPERATURE
 import com.google.ai.edge.gallery.data.DEFAULT_TOPK
 import com.google.ai.edge.gallery.data.DEFAULT_TOPP
 import com.google.ai.edge.gallery.data.Model
+import com.google.ai.edge.gallery.data.IMPORTS_DIR
 import com.google.ai.edge.gallery.engine.LlamaCppEngine
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ToolProvider
@@ -53,6 +54,9 @@ object LlamaCppModelHelper : LlmModelHelper {
             topP = topP,
             topK = topK,
             numThreads = Runtime.getRuntime().availableProcessors().coerceAtMost(8),
+            projectorPath = model.projectorFileName.takeIf { it.isNotBlank() }?.let { name ->
+                model.getPath(context, "$IMPORTS_DIR/$name")
+            },
         )
 
         engine.loadModel(

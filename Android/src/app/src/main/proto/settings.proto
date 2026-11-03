@@ -59,6 +59,9 @@ message LlmConfig {
   bool support_tiny_garden = 8;
   bool support_mobile_actions = 9;
   bool support_thinking = 10;
+  // App-private sidecar projector file name (within __imports/).
+  string projector_file_name = 11;
+  int64 projector_file_size = 12;
 }
 
 message Settings {

@@ -1277,6 +1277,7 @@ constructor(
         showBenchmarkButton = false,
         showRunAgainButton = false,
         imported = true,
+        projectorFileName = if (isGguf) info.llmConfig.projectorFileName else "",
         llmSupportImage = llmSupportImage,
         llmSupportAudio = llmSupportAudio,
         llmSupportTinyGarden = llmSupportTinyGarden,
