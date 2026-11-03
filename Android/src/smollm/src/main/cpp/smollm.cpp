@@ -191,6 +191,48 @@ Java_com_jegly_offlineLLM_smollm_SmolLM_completionLoop(
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_jegly_offlineLLM_smollm_SmolLM_nativeStartMixedCompletion(
+    JNIEnv *env, jobject, jlong id, jstring prompt) {
+    checked(env, [&] {
+        const std::string q = utf(env, prompt);
+        getInstance(id)->startMixedCompletion(q.c_str());
+    });
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_jegly_offlineLLM_smollm_SmolLM_nativeMixedCompletionLoop(
+    JNIEnv *env, jobject, jlong id) {
+    jobject result = nullptr;
+    checked(env, [&] {
+        const auto part = getInstance(id)->mixedCompletionLoop();
+        if (part.pcm16.size() > static_cast<size_t>(INT32_MAX))
+            throw std::runtime_error("Mixed PCM chunk is too large");
+        jclass cls = env->FindClass(
+            "com/jegly/offlineLLM/smollm/SmolLM$MixedVoiceStep");
+        if (!cls) return;
+        const jmethodID constructor = env->GetMethodID(
+            cls, "<init>", "(Ljava/lang/String;[BIZ)V");
+        if (!constructor) { env->DeleteLocalRef(cls); return; }
+        const jstring text = javaString(env, part.text);
+        const jbyteArray pcm = env->NewByteArray(static_cast<jsize>(part.pcm16.size()));
+        if (pcm && !part.pcm16.empty()) {
+            env->SetByteArrayRegion(
+                pcm, 0, static_cast<jsize>(part.pcm16.size()),
+                reinterpret_cast<const jbyte *>(part.pcm16.data()));
+        }
+        if (!env->ExceptionCheck() && text && pcm) {
+            result = env->NewObject(cls, constructor, text, pcm,
+                                    static_cast<jint>(part.sampleRate),
+                                    static_cast<jboolean>(part.done));
+        }
+        if (pcm) env->DeleteLocalRef(pcm);
+        if (text) env->DeleteLocalRef(text);
+        env->DeleteLocalRef(cls);
+    });
+    return result;
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_jegly_offlineLLM_smollm_SmolLM_stopCompletion(
     JNIEnv *env, jobject, jlong id) {
     checked(env, [&] { getInstance(id)->stopCompletion(); });
