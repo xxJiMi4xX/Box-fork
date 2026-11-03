@@ -57,6 +57,8 @@ class LlamaCppEngine {
         private set
     @Volatile var isVoiceBusy = false
         private set
+    @Volatile var hardwareInfo: String = ""
+        private set
     @Volatile var supportsGreekVoice = false
         private set
 
@@ -84,6 +86,7 @@ class LlamaCppEngine {
         val epoch = lifecycleEpoch.incrementAndGet()
         isModelLoaded.set(false)
         supportsGreekVoice = false
+        hardwareInfo = ""
         val pendingTeardown = latestTeardown.get()
         loadJob = scope.launch {
             try {
@@ -97,6 +100,7 @@ class LlamaCppEngine {
                     try {
                         next.load(modelPath, params)
                         supportsGreekVoice = next.audioCapabilities() == 3
+                        hardwareInfo = next.hardwareInfo()
                         if (systemPrompt.isNotBlank()) next.addSystemPrompt(systemPrompt)
                         conversationHistory.forEach { (role, content) ->
                             next.addChatMessage(role, content)
@@ -105,6 +109,7 @@ class LlamaCppEngine {
                         check(lifecycleEpoch.get() == epoch) { "Model load was superseded" }
                     } catch (failure: Throwable) {
                         supportsGreekVoice = false
+                        hardwareInfo = ""
                         next.close()
                         if (instance === next) instance = SmolLM()
                         throw failure
