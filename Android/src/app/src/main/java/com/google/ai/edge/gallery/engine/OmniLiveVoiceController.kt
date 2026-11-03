@@ -264,10 +264,11 @@ class OmniLiveVoiceController(private val context: Context) {
                 }
             } finally {
                 if (counted) activeMicrophones.decrementAndGet()
+                val finishingJob = currentCoroutineContext()[Job]
                 synchronized(lock) {
                     if (recorder === record) recorder = null
                     if (focusRequest === focus) focusRequest = null
-                    if (retiringJob === currentCoroutineContext()[Job]) retiringJob = null
+                    if (retiringJob === finishingJob) retiringJob = null
                 }
                 runCatching { echo?.release() }
                 runCatching { suppressor?.release() }
