@@ -9,6 +9,7 @@ import com.google.ai.edge.gallery.data.DEFAULT_TOPK
 import com.google.ai.edge.gallery.data.DEFAULT_TOPP
 import com.google.ai.edge.gallery.data.Model
 import com.google.ai.edge.gallery.engine.LlamaCppEngine
+import com.google.ai.edge.gallery.engine.GgufAudioFiles
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ToolProvider
 import com.jegly.offlineLLM.smollm.SmolLM
@@ -48,11 +49,14 @@ object LlamaCppModelHelper : LlmModelHelper {
         val engine = LlamaCppEngine()
         engines[model.name] = engine
 
+        val projector = GgufAudioFiles.findProjector(context, modelPath)
+        Log.d(TAG, "Selected GGUF mmproj: ${projector ?: "not installed"}")
         val params = SmolLM.InferenceParams(
             temperature = temperature,
             topP = topP,
             topK = topK,
             numThreads = Runtime.getRuntime().availableProcessors().coerceAtMost(8),
+            mmprojPath = projector,
         )
 
         engine.loadModel(

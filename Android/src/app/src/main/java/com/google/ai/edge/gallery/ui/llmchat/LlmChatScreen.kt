@@ -47,6 +47,7 @@ import com.google.ai.edge.gallery.data.Model
 import com.google.ai.edge.gallery.data.RuntimeType
 import com.google.ai.edge.gallery.data.Task
 import com.google.ai.edge.gallery.firebaseAnalytics
+import com.google.ai.edge.gallery.engine.GgufAudioFiles
 import com.google.ai.edge.gallery.ui.common.chat.ChatMessageAudioClip
 import com.google.ai.edge.gallery.ui.common.chat.ChatMessageImage
 import com.google.ai.edge.gallery.ui.common.chat.ChatMessageText
@@ -309,6 +310,13 @@ fun ChatViewWrapper(
     emptyStateComposable = emptyStateComposable,
     aboveInputComposable = { model ->
       ContextWindowIndicator(model = model, viewModel = viewModel)
+      if (task.id == BuiltInTaskId.LLM_CHAT &&
+          GgufAudioFiles.isGguf(model.getPath(context))) {
+        OmniProjectorPicker(model = model, context = context) {
+          modelManagerViewModel.cleanupModel(context = context, task = task, model = model)
+          modelManagerViewModel.initializeModel(context = context, task = task, model = model)
+        }
+      }
       aboveInputComposable(model)
     },
     allowEditingSystemPrompt = allowEditingSystemPrompt,

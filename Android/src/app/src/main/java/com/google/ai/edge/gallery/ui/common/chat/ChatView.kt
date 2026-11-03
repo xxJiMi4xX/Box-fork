@@ -16,7 +16,8 @@
 
 package com.google.ai.edge.gallery.ui.common.chat
 
-// import com.google.ai.edge.gallery.ui.preview.PreviewChatModel
+// import com.google.ai.edge.gallery.engine.GgufAudioFiles
+import com.google.ai.edge.gallery.ui.preview.PreviewChatModel
 // import com.google.ai.edge.gallery.ui.preview.PreviewModelManagerViewModel
 // import com.google.ai.edge.gallery.ui.preview.TASK_TEST1
 // import com.google.ai.edge.gallery.ui.theme.GalleryTheme
@@ -294,7 +295,10 @@ fun ChatView(
                 modifier = Modifier.weight(1f),
                 showStopButtonInInputWhenInProgress = showStopButtonInInputWhenInProgress,
                 showImagePicker = showImagePicker,
-                showAudioPicker = showAudioPicker,
+                showAudioPicker = showAudioPicker || (
+                  task.id == BuiltInTaskId.LLM_CHAT &&
+                  GgufAudioFiles.findProjector(context, selectedModel.getPath(context)) != null
+                ),
                 emptyStateComposable = emptyStateComposable,
                 aboveInputComposable = aboveInputComposable,
               )
