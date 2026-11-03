@@ -50,6 +50,7 @@ import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -64,8 +65,11 @@ open class LlmChatViewModelBase() : ChatViewModel() {
 
   // Box: Chat persistence — will be injected by Hilt in concrete subclasses
   override lateinit var chatRepository: ChatRepository
-  private var currentConversationId: String? = null
+  // Model-scoped session IDs: never share one Room conversation among models.
+  private val conversationIds = ConcurrentHashMap<String, String>()
+  @Volatile private var selectedConversationModel: String = ""
   private val conversationMutex = Mutex()
+  private var lastCommitJob: Job? = null
   private val voicePlayback = OmniVoicePlayback()
   private var voicePlaybackJob: Job? = null
   private var activeResponseJob: Job? = null
@@ -94,10 +98,12 @@ open class LlmChatViewModelBase() : ChatViewModel() {
 
   fun updateSystemPrompt(prompt: String) {
     _currentSystemPrompt.value = prompt
-    val convId = currentConversationId ?: return
+    val modelName = selectedConversationModel
+    val convId = conversationIds[modelName] ?: return
     viewModelScope.launch(Dispatchers.IO) {
       try {
         val conv = chatRepository.getConversationById(convId) ?: return@launch
+        if (conv.modelName != modelName) return@launch
         chatRepository.updateConversation(conv.copy(systemPrompt = prompt))
       } catch (e: Exception) {
         Log.e(TAG, "Failed to persist system prompt", e)
@@ -111,8 +117,68 @@ open class LlmChatViewModelBase() : ChatViewModel() {
   /**
    * Box: Set the current conversation ID for continuing an existing conversation
    */
-  fun setCurrentConversationId(conversationId: String) {
-    currentConversationId = conversationId
+  fun setCurrentConversationModel(modelName: String) {
+    selectedConversationModel = modelName
+  }
+
+  fun setCurrentConversationId(model: Model, conversationId: String) {
+    conversationIds[model.name] = conversationId
+    selectedConversationModel = model.name
+  }
+
+  fun beginNewConversation(model: Model) {
+    conversationIds.remove(model.name)
+  }
+
+  private suspend fun ensureConversationId(model: Model): String =
+    conversationMutex.withLock {
+      conversationIds[model.name] ?: chatRepository.createConversation(
+        title = "New Chat",
+        taskType = "llm_chat",
+        modelName = model.name,
+        systemPrompt = _currentSystemPrompt.value,
+      ).id.also { id -> conversationIds[model.name] = id }
+    }
+
+  /**
+   * Persist one complete native GGUF turn in a single Room transaction.
+   * Capturing its conversation ID before inference keeps a late commit in
+   * the original conversation even if reset/model switching happens later.
+   */
+  private fun persistCommittedGgufTurn(
+    model: Model,
+    conversationId: String,
+    user: String,
+    assistant: String,
+    latencyMs: Long,
+  ) {
+    val predecessor = lastCommitJob
+    lastCommitJob = viewModelScope.launch(Dispatchers.IO) {
+      predecessor?.join()
+      try {
+        conversationMutex.withLock {
+          chatRepository.saveCommittedTurn(
+            conversationId = conversationId,
+            modelName = model.name,
+            userText = user,
+            assistantText = assistant,
+            latencyMs = latencyMs,
+          )
+        }
+      } catch (cancelled: CancellationException) {
+        throw cancelled
+      } catch (error: Exception) {
+        Log.e(TAG, "Failed to commit GGUF conversation turn", error)
+        withContext(Dispatchers.Main) {
+          addMessage(
+            model = model,
+            message = ChatMessageWarning(
+              "Η απάντηση εμφανίστηκε, αλλά δεν αποθηκεύτηκε: ${error.message}"
+            ),
+          )
+        }
+      }
+    }
   }
 
   /**
@@ -151,7 +217,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
         // Use Mutex to ensure thread-safe conversation creation
         conversationMutex.withLock {
           // Get or create conversation ID
-          val convId = if (currentConversationId == null) {
+          val convId = if (conversationIds[model.name] == null) {
             Log.d(TAG, "Creating new conversation for model: ${model.name}")
             val conv = repo.createConversation(
               title = content.take(50),
@@ -159,11 +225,11 @@ open class LlmChatViewModelBase() : ChatViewModel() {
               modelName = model.name,
               systemPrompt = _currentSystemPrompt.value,
             )
-            currentConversationId = conv.id
+            conversationIds[model.name] = conv.id
             Log.d(TAG, "Created conversation with ID: ${conv.id}")
             conv.id
           } else {
-            currentConversationId!!
+            conversationIds.getValue(model.name)
           }
           
           // Now save the message with the guaranteed conversation ID
@@ -202,11 +268,12 @@ open class LlmChatViewModelBase() : ChatViewModel() {
       try {
         // Use Mutex to ensure thread-safe message saving
         conversationMutex.withLock {
-          val convId = currentConversationId
-          if (convId == null) {
-            Log.w(TAG, "No conversation ID available for assistant message, skipping persistence")
-            return@withLock
-          }
+          val convId = conversationIds[model.name] ?: chatRepository.createConversation(
+            title = "New Chat",
+            taskType = "llm_chat",
+            modelName = model.name,
+            systemPrompt = _currentSystemPrompt.value,
+          ).id.also { conversationIds[model.name] = it }
           
           try {
             repo.saveMessage(
