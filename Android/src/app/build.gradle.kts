@@ -28,9 +28,9 @@ plugins {
   kotlin("kapt")
 }
 
-android {
+extensions.configure<com.android.build.api.dsl.ApplicationExtension>("android") {
   namespace = "com.google.ai.edge.gallery"
-  compileSdk = 36
+  compileSdk = 37
 
   defaultConfig {
     applicationId = "com.box.gallery"
@@ -49,6 +49,10 @@ android {
   }
 
   buildTypes {
+    debug {
+      applicationIdSuffix = ".omni.dev"
+      versionNameSuffix = "-omni-dev"
+    }
     release {
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -58,10 +62,6 @@ android {
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11
     targetCompatibility = JavaVersion.VERSION_11
-  }
-  kotlinOptions {
-    jvmTarget = "11"
-    freeCompilerArgs += "-Xcontext-receivers"
   }
   buildFeatures {
     compose = true
@@ -154,4 +154,11 @@ protobuf {
 // the OssLicensesMenuActivity still compiles — it just won't have license data at runtime.
 tasks.configureEach {
   if (name.endsWith("OssLicensesTask")) enabled = false
+}
+
+kotlin {
+  compilerOptions {
+    jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+    freeCompilerArgs.add("-Xcontext-receivers")
+  }
 }
