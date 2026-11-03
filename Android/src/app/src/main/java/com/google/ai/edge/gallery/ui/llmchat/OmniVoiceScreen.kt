@@ -142,6 +142,11 @@ fun OmniVoiceScreen(
             VoiceGgufRuntimeSettings.gpuProjector(context, it.getPath(context))
         } ?: false)
     }
+    var performanceCoresOnly by remember(selected?.name) {
+        mutableStateOf(selected?.let {
+            VoiceGgufRuntimeSettings.performanceCoresOnly(context, it.getPath(context))
+        } ?: false)
+    }
     var unloading by remember(selected?.name) { mutableStateOf(false) }
     var runtimeError by remember(selected?.name) { mutableStateOf<String?>(null) }
     var useMixedVoice by remember(selected?.name) {
@@ -359,7 +364,8 @@ fun OmniVoiceScreen(
                             },
                         ) { Text("−") }
                         OutlinedButton(
-                            enabled = cpuThreads < maxCpuThreads && !unloading,
+                            enabled = cpuThreads < maxCpuThreads && !unloading &&
+                                (!performanceCoresOnly || cpuThreads < 4),
                             onClick = {
                                 val value = cpuThreads + 1
                                 runCatching {
@@ -372,6 +378,22 @@ fun OmniVoiceScreen(
                                 }.onFailure { runtimeError = it.message }
                             },
                         ) { Text("+") }
+                    }
+                    OutlinedButton(
+                        enabled = !unloading && (!(!performanceCoresOnly && cpuThreads > 4)),
+                        onClick = {
+                            val next = !performanceCoresOnly
+                            runCatching {
+                                VoiceGgufRuntimeSettings.setPerformanceCoresOnly(
+                                    context, selected.getPath(context), next)
+                            }.onSuccess {
+                                performanceCoresOnly = next
+                                runtimeError = null
+                            }.onFailure { runtimeError = it.message }
+                        },
+                    ) {
+                        Text(if (performanceCoresOnly) "CPU: 4 ισχυρότεροι πυρήνες"
+                            else "CPU: όλοι οι διαθέσιμοι πυρήνες")
                     }
                     Text("Νήματα CPU για prompt: $cpuBatchThreads / $maxCpuThreads")
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
