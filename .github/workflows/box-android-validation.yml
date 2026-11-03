@@ -1,8 +1,8 @@
-name: Box Android baseline validation
+name: Box Android GGUF / LiteRT validation
 
 on:
   push:
-    branches: [feature/lfm3-omni-android]
+    branches: [feature/lfm3-omni-android, feature/gguf-v080-native]
     paths:
       - "Android/**"
       - ".gitmodules"
