@@ -241,3 +241,81 @@ validation, stop/restart and memory-pressure tests, plus LiteRT-LM regression.
 The original stage-6 verification estimate remains 6–10 engineering hours,
 subject to additional corrections if failures emerge. The final APK stage
 remains explicitly outside the current user's authorization.
+
+
+## 2026-11-03 — Corrections after source-only plan audit
+
+Scope: code corrections only. **No new APK, Android compilation, emulator
+execution or real-device run was performed.** These changes are not CI
+verification and are not a claim that the code is already production-ready.
+
+### TTS fidelity and LFM3-specific chat prompts
+
+- Compared the model's GGUF `tokenizer.chat_template.tts` to the upstream
+  `llama.cpp` TTS helper and the published LFM3-Omni model format.
+- The JNI backend now validates the availability and supported signature of
+  the named **tts** template when loading an audio projector. For the known
+  LFM3-Omni-2B template, `language=el`, `voice=female`, and one user message
+  are rendered as the actual template's evaluated ChatML-like sequence:
+  `<|startoftext|>`, system instruction `Perform TTS in Greek using a
+  female voice.`, user text, assistant `<think></think><|audio_start|>`.
+  This deliberately does **not** pass the Jinja template to the heuristic
+  `llama_chat_apply_template` renderer, which cannot evaluate its language
+  and voice variables.
+- Greek ASR and ordinary LFM3 multi-turn text also use the LFM3-specific
+  start-of-text / empty-thinking prefixes. Historical assistant turns
+  preserve the expected prefix. Other GGUFs continue to use the original
+  generic text path. Reserved LFM3 control markers in TTS text are rejected.
+
+### mmproj compatibility and capability gating
+
+- Projector load requires GGUF `general.architecture=lfm3`, successful
+  `mtmd_init_from_file`, `mtmd_helper_get_capabilities` audio input +
+  audio generation, a valid encoder sample rate, an LFM3A codec and
+  nonzero output sample rate. A GGUF lacking the named supported TTS
+  template is rejected for this voice path.
+- JNI exposes actual validated capabilities to Kotlin. The Box microphone
+  button and live voice panel appear only when the currently loaded native
+  model reports the required capabilities, not merely when a file with
+  `mmproj` in its name is present.
+- Projector discovery no longer pairs an arbitrary single file with a
+  possibly unrelated model. It accepts a directly corresponding filename,
+  a unique LFM3-Omni-2B family sidecar even if the quantization tag differs,
+  or a user-imported projector. Imported sidecars are validated as GGUF and
+  bounded to 4 GiB before atomic replacement.
+- Caveat: generic capability metadata and architecture checks cannot
+  cryptographically prove the projector's tensor weights came from the
+  matching original checkpoint. The actual decoder still requires on-device
+  compatibility and correctness testing.
+
+### Session lifecycle, cancellation, and context
+
+- Native cancel/failed decode restores the prior message history, rather than
+  leaving an unanswered user turn or partial assistant reply as if completed.
+- The native end-of-generation state is now represented by a nullable JNI
+  result instead of an ambiguous literal `[EOG]` string.
+- Session reset no longer performs a fire-and-forget, expensive GGUF reload.
+  It synchronously clears native history, sampling state and KV cache while
+  holding the engine's native mutex. Failure propagates to the reset caller.
+  The calling ViewModel uses a background coroutine; a guard prevents
+  invoking its synchronous bridge from the Android UI thread.
+- A failed reset does not silently clear the visible chat; the conversation
+  is only cleared on a successful native reset. Existing engine teardown,
+  cancellation epochs and voice playback stop are retained.
+- The default context is 4096 tokens, bounded by the model and app limits,
+  rather than silently using 8192 when the GGUF advertises a much larger
+  maximum. Unsupported GGUF image input is not advertised through the UI.
+
+### Verification still required before describing this as functional
+
+1. Compile and link C++/JNI and Kotlin on the **current audio-stage branch**
+   (not an older text-only commit).
+2. Load the actual LFM3-Omni-2B GGUF with its associated audio projector.
+3. Execute Greek ASR and TTS independently, confirm WAV header, audio rate,
+   audible playback and absence of template refusals.
+4. Run at least ten spoken conversation turns, interruption/restart and
+   context rollover; confirm canceled turns do not corrupt model history.
+5. Check Android lifecycle, memory pressure, Bluetooth/headphone routes and
+   echo cancellation on the target phone. Verify LiteRT-LM separately.
+
+The source fixes above do not supersede these acceptance gates.
