@@ -321,11 +321,8 @@ open class LlmChatViewModelBase() : ChatViewModel() {
       setInProgress(true)
       setPreparing(true)
 
-      // Box: Persist user message to encrypted DB
-      if (input.isNotEmpty()) {
-        persistUserMessage(model, input)
-      }
-
+      // GGUF persists complete committed pairs, never an unpaired prompt.
+      // The legacy LiteRT path continues using its original persistence.
       // Loading.
       addMessage(model = model, message = ChatMessageLoading(accelerator = accelerator))
 
@@ -346,6 +343,9 @@ open class LlmChatViewModelBase() : ChatViewModel() {
       }
       delay(100)
       if (requestEpoch.get() != epoch) return@launch
+      if (input.isNotEmpty() && model.instance !is LlamaCppEngine) {
+        persistUserMessage(model, input)
+      }
 
       // Run inference.
       val audioClips: MutableList<ByteArray> = mutableListOf()
@@ -391,12 +391,27 @@ open class LlmChatViewModelBase() : ChatViewModel() {
             model = model,
             message = ChatMessageText(content = transcript, side = ChatSide.USER)
           )
-          persistUserMessage(model, transcript)
           addMessage(model = model, message = ChatMessageLoading(accelerator = accelerator))
           effectiveInput = listOf(input, transcript).filter { it.isNotBlank() }.joinToString("\n")
           audioClips.clear()
           voiceRequested = true
         }
+
+        val ggufConversationId = if (model.instance is LlamaCppEngine) {
+          try {
+            ensureConversationId(model)
+          } catch (cancelled: CancellationException) {
+            throw cancelled
+          } catch (error: Exception) {
+            if (requestEpoch.get() == epoch) {
+              setPreparing(false)
+              setInProgress(false)
+              reportVoiceError(model, error.message ?: "Η συνεδρία δεν αποθηκεύτηκε")
+            }
+            return@launch
+          }
+        } else null
+        val turnInput = effectiveInput
 
         val resultListener: (String, Boolean, String?) -> Unit =
           { partialResult, done, partialThinkingResult ->
@@ -514,7 +529,14 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                 // Box: Persist assistant response to encrypted DB.
                 val assistantMsg = getLastMessageWithTypeAndSide(model, ChatMessageType.TEXT, ChatSide.AGENT)
                 if (assistantMsg is ChatMessageText && assistantMsg.content.isNotEmpty()) {
-                  persistAssistantMessage(model, assistantMsg.content, assistantMsg.latencyMs.toLong())
+                  if (ggufConversationId != null) {
+                    persistCommittedGgufTurn(
+                      model, ggufConversationId, turnInput,
+                      assistantMsg.content, assistantMsg.latencyMs.toLong()
+                    )
+                  } else {
+                    persistAssistantMessage(model, assistantMsg.content, assistantMsg.latencyMs.toLong())
+                  }
                 }
 
                 if (voiceRequested && voiceEngine != null &&
@@ -678,6 +700,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
           )
         } else {
           clearAllMessages(model = model)
+          beginNewConversation(model)
           onDone()
         }
       } finally {
