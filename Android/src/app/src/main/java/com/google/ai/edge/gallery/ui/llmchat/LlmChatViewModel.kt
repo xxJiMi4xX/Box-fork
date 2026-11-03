@@ -474,6 +474,9 @@ open class LlmChatViewModelBase() : ChatViewModel() {
         )
       } catch (e: Exception) {
         Log.e(TAG, "Error occurred while running inference", e)
+        if (getLastMessage(model = model)?.type == ChatMessageType.LOADING) {
+          removeLastMessage(model = model)
+        }
         setInProgress(false)
         setPreparing(false)
         onError(e.message ?: "")
@@ -489,6 +492,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
       removeLastMessage(model = model)
     }
     setInProgress(false)
+    setPreparing(false)
     model.runtimeHelper.stopResponse(model)
     Log.d(TAG, "Done stopping response")
   }

@@ -16,6 +16,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.time.measureTime
 
 /**
@@ -27,6 +28,7 @@ class LlamaCppEngine {
     @Volatile private var instance = SmolLM()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val nativeMutex = Mutex()
+    private val lifecycleEpoch = AtomicLong(0L)
 
     var lastLoadParams: SmolLM.InferenceParams? = null
         private set
@@ -65,6 +67,7 @@ class LlamaCppEngine {
 
         stopGeneration()
         loadJob?.cancel()
+        val epoch = lifecycleEpoch.incrementAndGet()
         isModelLoaded.set(false)
         loadJob = scope.launch {
             try {
@@ -73,16 +76,25 @@ class LlamaCppEngine {
                     previous.close()
                     val next = SmolLM()
                     instance = next
-                    next.load(modelPath, params)
-                    if (systemPrompt.isNotBlank()) next.addSystemPrompt(systemPrompt)
-                    conversationHistory.forEach { (role, content) ->
-                        next.addChatMessage(role, content)
+                    try {
+                        next.load(modelPath, params)
+                        if (systemPrompt.isNotBlank()) next.addSystemPrompt(systemPrompt)
+                        conversationHistory.forEach { (role, content) ->
+                            next.addChatMessage(role, content)
+                        }
+                        currentCoroutineContext().ensureActive()
+                        check(lifecycleEpoch.get() == epoch) { "Model load was superseded" }
+                    } catch (failure: Throwable) {
+                        next.close()
+                        if (instance === next) instance = SmolLM()
+                        throw failure
                     }
-                    currentCoroutineContext().ensureActive()
                 }
                 withContext(Dispatchers.Main) {
-                    isModelLoaded.set(true)
-                    onSuccess()
+                    if (lifecycleEpoch.get() == epoch) {
+                        isModelLoaded.set(true)
+                        onSuccess()
+                    }
                 }
             } catch (error: CancellationException) {
                 throw error
@@ -98,6 +110,7 @@ class LlamaCppEngine {
     fun unloadModel() {
         stopGeneration()
         loadJob?.cancel()
+        lifecycleEpoch.incrementAndGet()
         isModelLoaded.set(false)
         // Close the captured instance only after any active JNI call releases
         // the native mutex. A subsequent model load cannot be closed by this job.
