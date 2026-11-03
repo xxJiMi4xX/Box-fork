@@ -1,71 +1,18 @@
 package com.jegly.offlineLLM.smollm
 
-import android.os.Build
-import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
-import java.io.File
-import java.io.FileNotFoundException
 
 class SmolLM {
     companion object {
-        private const val TAG = "SmolLM"
-
-        init {
-            val cpuFeatures = getCPUFeatures()
-            val hasFp16 = cpuFeatures.contains("fp16") || cpuFeatures.contains("fphp")
-            val hasDotProd = cpuFeatures.contains("dotprod") || cpuFeatures.contains("asimddp")
-            val hasSve = cpuFeatures.contains("sve")
-            val hasI8mm = cpuFeatures.contains("i8mm")
-            val isAtLeastArmV82 =
-                cpuFeatures.contains("asimd") &&
-                    cpuFeatures.contains("crc32") &&
-                    cpuFeatures.contains("aes")
-            val isAtLeastArmV84 = cpuFeatures.contains("dcpop") && cpuFeatures.contains("uscat")
-
-            val isEmulated =
-                (Build.HARDWARE.contains("goldfish") || Build.HARDWARE.contains("ranchu"))
-
-            if (!isEmulated) {
-                if (supportsArm64V8a()) {
-                    if (isAtLeastArmV84 && hasSve && hasI8mm && hasFp16 && hasDotProd) {
-                        System.loadLibrary("smollm_v8_4_fp16_dotprod_i8mm_sve")
-                    } else if (isAtLeastArmV84 && hasSve && hasFp16 && hasDotProd) {
-                        System.loadLibrary("smollm_v8_4_fp16_dotprod_sve")
-                    } else if (isAtLeastArmV84 && hasI8mm && hasFp16 && hasDotProd) {
-                        System.loadLibrary("smollm_v8_4_fp16_dotprod_i8mm")
-                    } else if (isAtLeastArmV84 && hasFp16 && hasDotProd) {
-                        System.loadLibrary("smollm_v8_4_fp16_dotprod")
-                    } else if (isAtLeastArmV82 && hasFp16 && hasDotProd) {
-                        System.loadLibrary("smollm_v8_2_fp16_dotprod")
-                    } else if (isAtLeastArmV82 && hasFp16) {
-                        System.loadLibrary("smollm_v8_2_fp16")
-                    } else {
-                        System.loadLibrary("smollm_v8")
-                    }
-                } else {
-                    System.loadLibrary("smollm")
-                }
-            } else {
-                System.loadLibrary("smollm")
-            }
-        }
-
-        private fun getCPUFeatures(): String {
-            return try {
-                File("/proc/cpuinfo").readText()
-                    .substringAfter("Features").substringAfter(":").substringBefore("\n").trim()
-            } catch (e: FileNotFoundException) {
-                ""
-            }
-        }
-
-        private fun supportsArm64V8a(): Boolean = Build.SUPPORTED_ABIS[0] == "arm64-v8a"
+        init { System.loadLibrary("smollm") }
     }
 
-    private var nativePtr = 0L
+    @Volatile private var nativePtr = 0L
 
     data class InferenceParams(
         val minP: Float = 0.1f,
@@ -82,18 +29,15 @@ class SmolLM {
     )
 
     object DefaultParams {
-        const val CONTEXT_SIZE: Long = 2048L
-        const val CHAT_TEMPLATE: String =
-            "{% for message in messages %}{% if loop.first and messages[0]['role'] != 'system' %}{{ '<|im_start|>system You are a helpful AI assistant.<|im_end|> ' }}{% endif %}{{'<|im_start|>' + message['role'] + ' ' + message['content'] + '<|im_end|>' + ' '}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant ' }}{% endif %}"
+        const val CONTEXT_SIZE: Long = 4096L
     }
 
     suspend fun load(modelPath: String, params: InferenceParams = InferenceParams()) =
         withContext(Dispatchers.IO) {
-            val ggufReader = GGUFReader()
-            ggufReader.load(modelPath)
-            val modelContextSize = ggufReader.getContextSize() ?: DefaultParams.CONTEXT_SIZE
-            val modelChatTemplate = ggufReader.getChatTemplate() ?: DefaultParams.CHAT_TEMPLATE
-            nativePtr = loadModel(
+            check(nativePtr == 0L) { "A model is already loaded." }
+            // The native loader reads model metadata and the model's own chat template.
+            // A model-advertised training context may be too large for a mobile device.
+            val handle = loadModel(
                 modelPath,
                 params.minP,
                 params.temperature,
@@ -101,12 +45,20 @@ class SmolLM {
                 params.topK,
                 params.repeatPenalty,
                 params.storeChats,
-                params.contextSize ?: modelContextSize,
-                params.chatTemplate ?: modelChatTemplate,
+                params.contextSize ?: DefaultParams.CONTEXT_SIZE,
+                params.chatTemplate ?: "",
                 params.numThreads,
                 params.useMmap,
                 params.useMlock,
             )
+            check(handle != 0L) { "Native model loading failed." }
+            try {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                nativePtr = handle
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                close(handle)
+                throw e
+            }
         }
 
     /**
@@ -141,27 +93,35 @@ class SmolLM {
     }
 
     fun getResponseAsFlow(query: String): Flow<String> = flow {
-        verifyHandle()
-        startCompletion(nativePtr, query)
-        var piece = completionLoop(nativePtr)
-        while (piece != "[EOG]") {
-            emit(piece)
-            piece = completionLoop(nativePtr)
+        val handle = nativePtr
+        check(handle != 0L) { "Model is not loaded." }
+        startCompletion(handle, query)
+        try {
+            while (kotlinx.coroutines.currentCoroutineContext().isActive) {
+                val piece = completionLoop(handle)
+                if (piece == "[EOG]") break
+                if (piece.isNotEmpty()) emit(piece)
+            }
+        } finally {
+            try { stopCompletion(handle) } catch (_: IllegalStateException) {}
         }
-        stopCompletion(nativePtr)
     }
 
     fun getResponse(query: String): String {
-        verifyHandle()
-        startCompletion(nativePtr, query)
-        var piece = completionLoop(nativePtr)
-        var response = ""
-        while (piece != "[EOG]") {
-            response += piece
-            piece = completionLoop(nativePtr)
+        val handle = nativePtr
+        check(handle != 0L) { "Model is not loaded." }
+        startCompletion(handle, query)
+        val response = StringBuilder()
+        try {
+            while (true) {
+                val piece = completionLoop(handle)
+                if (piece == "[EOG]") break
+                response.append(piece)
+            }
+        } finally {
+            try { stopCompletion(handle) } catch (_: IllegalStateException) {}
         }
-        stopCompletion(nativePtr)
-        return response
+        return response.toString()
     }
 
     fun benchModel(pp: Int, tg: Int, pl: Int, nr: Int): String {
@@ -169,11 +129,17 @@ class SmolLM {
         return benchModel(nativePtr, pp, tg, pl, nr)
     }
 
-    fun close() {
-        if (nativePtr != 0L) {
-            close(nativePtr)
-            nativePtr = 0L
+    fun interruptGeneration() {
+        val handle = nativePtr
+        if (handle != 0L) {
+            try { requestAbort(handle) } catch (_: IllegalStateException) {}
         }
+    }
+
+    fun close() {
+        val handle = nativePtr
+        nativePtr = 0L
+        if (handle != 0L) close(handle)
     }
 
     fun isLoaded(): Boolean = nativePtr != 0L
@@ -195,5 +161,6 @@ class SmolLM {
     private external fun startCompletion(modelPtr: Long, prompt: String)
     private external fun completionLoop(modelPtr: Long): String
     private external fun stopCompletion(modelPtr: Long)
+    private external fun requestAbort(modelPtr: Long)
     private external fun benchModel(modelPtr: Long, pp: Int, tg: Int, pl: Int, nr: Int): String
 }
