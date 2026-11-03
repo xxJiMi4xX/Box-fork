@@ -18,6 +18,21 @@ set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA OFF CACHE BOOL "" FORCE)
 set(LLAMA_CURL OFF CACHE BOOL "" FORCE)
 
+# Android's cross-compilation toolchain searches the NDK sysroot for CMake
+# packages. SPIRV-Headers is a header-only HOST package supplied by the Vulkan
+# shader toolchain; allow its explicit config directory without altering how
+# the rest of the NDK resolves target libraries.
+if(ANDROID AND NOT DEFINED "SPIRV-Headers_DIR")
+    if(DEFINED ENV{SPIRV_HEADERS_CMAKE_DIR} AND
+       EXISTS "$ENV{SPIRV_HEADERS_CMAKE_DIR}/SPIRV-HeadersConfig.cmake")
+        set("SPIRV-Headers_DIR" "$ENV{SPIRV_HEADERS_CMAKE_DIR}" CACHE PATH
+            "Host SPIRV-Headers CMake package for Vulkan shader generation")
+    elseif(EXISTS "/usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake")
+        set("SPIRV-Headers_DIR" "/usr/share/cmake/SPIRV-Headers" CACHE PATH
+            "Host SPIRV-Headers CMake package for Vulkan shader generation")
+    endif()
+endif()
+
 get_filename_component(LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../llama.cpp" ABSOLUTE)
 add_subdirectory("${LLAMA_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/llama-build")
 
