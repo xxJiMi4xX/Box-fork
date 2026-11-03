@@ -1,6 +1,7 @@
 package com.google.ai.edge.gallery.engine
 
 import com.jegly.offlineLLM.smollm.SmolLM
+import android.os.Looper
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -162,6 +163,11 @@ class LlamaCppEngine {
         if (modelPath != lastModelPath) {
             onError(IllegalArgumentException("Cannot reset a different loaded GGUF"))
             return
+        }
+        // A synchronous bridge on the UI thread could deadlock a generation
+        // coroutine that is delivering its final callback to Dispatchers.Main.
+        check(Looper.myLooper() != Looper.getMainLooper()) {
+            "GGUF conversation reset must be dispatched off the Android main thread"
         }
         val activeGeneration = generationJob
         stopGeneration()

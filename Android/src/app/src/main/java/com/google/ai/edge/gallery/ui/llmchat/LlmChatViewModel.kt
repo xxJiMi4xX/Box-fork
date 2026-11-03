@@ -553,7 +553,6 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     viewModelScope.launch(Dispatchers.Default) {
       setIsResettingSession(true)
       try {
-        clearAllMessages(model = model)
         stopResponse(model = model)
 
         var succeeded = false
@@ -586,6 +585,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
             ),
           )
         } else {
+          clearAllMessages(model = model)
           onDone()
         }
       } finally {
