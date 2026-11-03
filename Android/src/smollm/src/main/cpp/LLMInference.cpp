@@ -132,6 +132,8 @@ void LLMInference::startCompletion(const char *query) {
     if (!query) throw std::invalid_argument("Null user prompt");
     std::lock_guard<std::mutex> lock(mutex_);
     if (!context_ || generating_) throw std::runtime_error("Model unavailable or generation active");
+    const auto historyBackup = messages_;
+    try {
     stopRequested_.store(false);
     if (!storeChats_) {
         messages_.erase(std::remove_if(messages_.begin(), messages_.end(),
@@ -192,6 +194,15 @@ void LLMInference::startCompletion(const char *query) {
         contextUsed_ += count;
     }
     generating_ = true;
+    } catch (...) {
+        messages_ = historyBackup;
+        generating_ = false;
+        response_.clear();
+        pendingUtf8_.clear();
+        llama_memory_clear(llama_get_memory(context_), false);
+        llama_sampler_reset(sampler_);
+        throw;
+    }
 }
 
 bool LLMInference::validUtf8(const std::string &bytes) {
@@ -315,12 +326,20 @@ std::string LLMInference::transcribeAudio(const std::vector<float> &pcm) {
     if (mtmd_helper_eval_chunks(mmproj_, context_, chunks, 0, 0,
         static_cast<int32_t>(llama_n_batch(context_)), true, &nPast) != 0)
         throw std::runtime_error("Audio encoder/decoder failed");
+    // ASR should be deterministic. Use a separate greedy sampler so that
+    // conversational temperature/top-p settings cannot hallucinate a transcript.
+    std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)> asrSampler(
+        llama_sampler_init_greedy(), llama_sampler_free);
+    if (!asrSampler) throw std::runtime_error("Cannot initialize ASR sampler");
+    const llama_vocab *vocab = llama_model_get_vocab(model_);
     std::string transcript;
-    for (int i = 0; i < 512 && nPast + 1 < static_cast<llama_pos>(llama_n_ctx(context_)); ++i) {
+    const int32_t remaining = static_cast<int32_t>(llama_n_ctx(context_) - nPast - 1);
+    const int32_t limit = std::min<int32_t>(2048, remaining);
+    for (int32_t i = 0; i < limit; ++i) {
         if (stopRequested_.load()) throw std::runtime_error("Transcription interrupted");
-        const llama_token tok = llama_sampler_sample(sampler_, context_, -1);
-        if (llama_vocab_is_eog(llama_model_get_vocab(model_), tok)) break;
-        transcript += tokenToPiece(tok);
+        const llama_token tok = llama_sampler_sample(asrSampler.get(), context_, -1);
+        if (llama_vocab_is_eog(vocab, tok)) break;
+        if (!llama_vocab_is_control(vocab, tok)) transcript += tokenToPiece(tok);
         llama_token mutableToken = tok;
         if (llama_decode(context_, llama_batch_get_one(&mutableToken, 1)) != 0)
             throw std::runtime_error("ASR decode failed");
@@ -328,7 +347,8 @@ std::string LLMInference::transcribeAudio(const std::vector<float> &pcm) {
     }
     llama_memory_clear(llama_get_memory(context_), false);
     llama_sampler_reset(sampler_);
-    if (transcript.empty()) throw std::runtime_error("No audio transcript produced");
+    if (transcript.find_first_not_of(" \t\r\n") == std::string::npos)
+        throw std::runtime_error("No intelligible audio transcript produced");
     return transcript;
 }
 
