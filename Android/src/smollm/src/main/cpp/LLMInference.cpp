@@ -44,6 +44,10 @@ void LLMInference::loadModel(const char *path, float minP, float temperature, fl
         : (useMlock ? LLAMA_LOAD_MODE_MLOCK : LLAMA_LOAD_MODE_NONE);
     model_ = llama_model_load_from_file(path, mp);
     if (!model_) throw std::runtime_error("Cannot load GGUF model");
+    char architecture[128] = {};
+    isLfm3_ = llama_model_meta_val_str(
+        model_, "general.architecture", architecture, sizeof(architecture)) > 0 &&
+        std::string_view(architecture) == "lfm3";
     llama_context_params cp = llama_context_default_params();
     cp.n_ctx = static_cast<uint32_t>(contextSize);
     cp.n_batch = static_cast<uint32_t>(std::min<long>(512, contextSize));
@@ -79,10 +83,7 @@ void LLMInference::loadModel(const char *path, float minP, float temperature, fl
         params.n_threads = nThreads;
         mmproj_ = mtmd_init_from_file(mmprojPath, model_, params);
         if (!mmproj_) throw std::runtime_error("Cannot load the matching mmproj GGUF");
-        char architecture[128] = {};
-        if (llama_model_meta_val_str(model_, "general.architecture",
-                                     architecture, sizeof(architecture)) <= 0 ||
-            std::string_view(architecture) != "lfm3")
+        if (!isLfm3_)
             throw std::runtime_error("Voice projector requires an LFM3-Omni model");
         const mtmd_helper_cap capabilities = mtmd_helper_get_capabilities(model_, mmproj_);
         const mtmd_gen_audio_info audioInfo = mtmd_gen_audio_get_info(mmproj_);
@@ -170,7 +171,7 @@ void LLMInference::startCompletion(const char *query) {
     }
     messages_.emplace_back("user", query);
     auto renderConversation = [&]() -> std::vector<llama_token> {
-        if (audioCapabilities_ == 3) {
+        if (isLfm3_) {
             // LFM3's native chat template includes BOS and an empty thinking
             // section before every assistant answer. llama_chat_apply_template
             // is a heuristic renderer and does not evaluate these Jinja blocks.

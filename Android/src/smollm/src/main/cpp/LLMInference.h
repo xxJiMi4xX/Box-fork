@@ -51,6 +51,7 @@ private:
     std::string response_;
     std::string pendingUtf8_;
     bool storeChats_ = true;
+    bool isLfm3_ = false;
     bool generating_ = false;
     int contextUsed_ = 0;
     int responseTokens_ = 0;
