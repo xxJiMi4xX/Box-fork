@@ -264,6 +264,7 @@ class OmniLiveVoiceController(private val context: Context) {
                     if (recorder === record) recorder = null
                     if (focusRequest === focus) focusRequest = null
                     if (retiringJob === finishingJob) retiringJob = null
+                    if (captureJob === finishingJob) captureJob = null
                 }
                 runCatching { echo?.release() }
                 runCatching { suppressor?.release() }
