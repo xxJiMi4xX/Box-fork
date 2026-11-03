@@ -79,6 +79,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -95,6 +96,7 @@ import com.google.ai.edge.gallery.R
 import com.google.ai.edge.gallery.data.BuiltInTaskId
 import com.google.ai.edge.gallery.data.Model
 import com.google.ai.edge.gallery.data.Task
+import com.google.ai.edge.gallery.engine.GgufAudioFiles
 import com.google.ai.edge.gallery.ui.common.AudioAnimation
 import com.google.ai.edge.gallery.ui.common.ErrorDialog
 import com.google.ai.edge.gallery.ui.common.FloatingBanner
@@ -130,6 +132,9 @@ fun ChatPanel(
   emptyStateComposable: @Composable (Model) -> Unit = {},
   aboveInputComposable: @Composable (Model) -> Unit = {},
 ) {
+  val context = LocalContext.current
+  val supportsGgufVoice = task.id == BuiltInTaskId.LLM_CHAT &&
+    GgufAudioFiles.findProjector(context, selectedModel.getPath(context)) != null
   val uiState by viewModel.uiState.collectAsState()
   val modelManagerUiState by modelManagerViewModel.uiState.collectAsState()
   val messages = uiState.messagesByModel[selectedModel.name] ?: listOf()
@@ -599,7 +604,7 @@ fun ChatPanel(
         showPromptTemplatesInMenu = false,
         showSkillsPicker = task.id === BuiltInTaskId.LLM_AGENT_CHAT,
         showImagePicker = selectedModel.llmSupportImage && showImagePicker,
-        showAudioPicker = selectedModel.llmSupportAudio && showAudioPicker,
+        showAudioPicker = (selectedModel.llmSupportAudio && showAudioPicker) || supportsGgufVoice,
         showDocumentPicker = task.id == BuiltInTaskId.LLM_CHAT,
         showStopButtonWhenInProgress = showStopButtonInInputWhenInProgress,
         onImageLimitExceeded = { showImageLimitBanner = true },
