@@ -61,6 +61,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ListAlt
 import androidx.compose.material.icons.rounded.Error
 import androidx.compose.material.icons.rounded.Forum
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.AddComment
 import androidx.compose.material.icons.rounded.Flag
 import androidx.compose.material.icons.rounded.FolderOpen
@@ -171,6 +172,7 @@ fun HomeScreen(
   navigateToChatHistory: () -> Unit = {},
   onNewChatClicked: () -> Unit = {},
   onImportModelClicked: () -> Unit = {},
+  onVoiceChatClicked: () -> Unit,
   enableAnimation: Boolean,
   modifier: Modifier = Modifier,
   gm4: Boolean = false,
@@ -513,6 +515,23 @@ fun HomeScreen(
                       )
                     }
                   }
+                }
+
+                // Permanent access to the dedicated voice conversation page.
+                // No ASR/TTS capability check is applied here: the voice
+                // screen itself explains missing projector and load failures.
+                FilledTonalButton(
+                  onClick = onVoiceChatClicked,
+                  modifier = Modifier.fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 4.dp),
+                ) {
+                  Icon(
+                    Icons.Rounded.Mic,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                  )
+                  Spacer(modifier = Modifier.width(8.dp))
+                  Text("Φωνητική συνομιλία")
                 }
 
                 // Tab header for categories.

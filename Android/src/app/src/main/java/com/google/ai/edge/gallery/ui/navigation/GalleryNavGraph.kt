@@ -82,6 +82,7 @@ import com.google.ai.edge.gallery.ui.common.ErrorDialog
 import com.google.ai.edge.gallery.ui.common.ModelPageAppBar
 import com.google.ai.edge.gallery.ui.common.chat.ModelDownloadStatusInfoPanel
 import com.google.ai.edge.gallery.ui.home.HomeScreen
+import com.google.ai.edge.gallery.ui.llmchat.OmniVoiceScreen
 import com.google.ai.edge.gallery.ui.home.PromoScreenGm4
 import com.google.ai.edge.gallery.ui.modelmanager.GlobalModelManager
 import com.google.ai.edge.gallery.ui.modelmanager.ModelInitializationStatusType
@@ -98,6 +99,7 @@ private const val ROUTE_MODEL = "route_model"
 private const val ROUTE_BENCHMARK = "benchmark"
 private const val ROUTE_MODEL_MANAGER = "model_manager"
 private const val ROUTE_CHAT_HISTORY = "chat_history"
+private const val ROUTE_VOICE_CHAT = "omni_voice_chat"
 private const val ENTER_ANIMATION_DURATION_MS = 500
 private val ENTER_ANIMATION_EASING = EaseOutExpo
 private const val ENTER_ANIMATION_DELAY_MS = 100
@@ -206,6 +208,7 @@ fun GalleryNavHost(
           },
           onModelsClicked = { navController.navigate(ROUTE_MODEL_MANAGER) },
           navigateToChatHistory = { navController.navigate(ROUTE_CHAT_HISTORY) },
+          onVoiceChatClicked = { navController.navigate(ROUTE_VOICE_CHAT) },
           onNewChatClicked = {
             val llmChatTask = modelManagerViewModel.getTaskById(BuiltInTaskId.LLM_CHAT)
             val firstModel = llmChatTask?.models?.firstOrNull()
@@ -223,6 +226,21 @@ fun GalleryNavHost(
           gm4 = true,
         )
       }
+    }
+
+    // Dedicated local LFM3-Omni hands-free voice conversation screen.
+    composable(
+      route = ROUTE_VOICE_CHAT,
+      enterTransition = { slideEnter() },
+      exitTransition = { slideExit() },
+    ) {
+      OmniVoiceScreen(
+        modelManagerViewModel = modelManagerViewModel,
+        navigateUp = { navController.navigateUp() },
+        onImportModelClicked = {
+          navController.navigate("$ROUTE_MODEL_MANAGER?startImport=true")
+        },
+      )
     }
 
     // Model list.

@@ -321,16 +321,6 @@ fun ChatViewWrapper(
             context = context, task = task, model = model, force = true
           )
         }
-        if ((model.instance as? com.google.ai.edge.gallery.engine.LlamaCppEngine)
-            ?.supportsGreekVoice == true) {
-          OmniLiveVoicePanel(
-            model = model,
-            viewModel = viewModel,
-            onError = { errorMessage ->
-              viewModel.reportVoiceError(model = model, message = errorMessage)
-            },
-          )
-        }
       }
       aboveInputComposable(model)
     },
