@@ -125,7 +125,7 @@ fun ChatView(
   LaunchedEffect(conversationId, selectedModel.name) {
     val llmViewModel = viewModel as? com.google.ai.edge.gallery.ui.llmchat.LlmChatViewModelBase
       ?: return@LaunchedEffect
-    llmViewModel.setCurrentConversationModel(selectedModel.name)
+    llmViewModel.setCurrentConversationModel(selectedModel)
     llmViewModel.beginHistorySynchronization(selectedModel)
     var failure: String? = null
     try {
