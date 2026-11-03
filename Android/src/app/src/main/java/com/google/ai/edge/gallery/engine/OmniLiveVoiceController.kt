@@ -9,6 +9,8 @@ import android.media.AudioManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.os.SystemClock
+import android.util.Log
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
 import androidx.core.content.ContextCompat
@@ -162,6 +164,7 @@ class OmniLiveVoiceController(private val context: Context) {
                 var silence = 0
                 var total = 0
                 var inSpeech = false
+                var speechStartedNs = 0L
                 var echoTailFrames = 0
 
                 while (currentCoroutineContext().isActive) {
@@ -216,6 +219,8 @@ class OmniLiveVoiceController(private val context: Context) {
                         onset = if (loud) onset + 1 else 0
                         if (onset >= START_VOICED_FRAMES) {
                             inSpeech = true
+                            speechStartedNs = SystemClock.elapsedRealtimeNanos()
+                            Log.i("BoxVoiceLatency", "stage=vad_speech_detected frameMs=$FRAME_MS")
                             voiced = onset
                             silence = 0
                             total = 0
@@ -238,6 +243,8 @@ class OmniLiveVoiceController(private val context: Context) {
                         silence++
                     }
                     if (silence >= END_SILENCE_FRAMES || total >= MAX_UTTERANCE_FRAMES) {
+                        val speechWindowMs = (SystemClock.elapsedRealtimeNanos() - speechStartedNs) / 1_000_000L
+                        Log.i("BoxVoiceLatency", "stage=vad_utterance_end elapsedMs=$speechWindowMs trailingSilenceMs=${silence * FRAME_MS} frames=$total")
                         if (voiced >= MIN_UTTERANCE_FRAMES &&
                             speech.size() <= MAX_UTTERANCE_FRAMES * FRAME_BYTES + PRE_ROLL_FRAMES * FRAME_BYTES) {
                             val bytes = speech.toByteArray()
