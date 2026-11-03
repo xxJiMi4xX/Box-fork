@@ -33,8 +33,9 @@ void LLMInference::loadModel(const char *path, float minP, float temperature, fl
     ggml_backend_load_all();
     llama_model_params mp = llama_model_default_params();
     mp.n_gpu_layers = 0; // Verified CPU baseline; add Vulkan only after stability.
-    mp.use_mmap = useMmap;
-    mp.use_mlock = useMlock;
+    mp.load_mode = useMmap
+        ? (useMlock ? LLAMA_LOAD_MODE_MMAP_MLOCK : LLAMA_LOAD_MODE_MMAP)
+        : (useMlock ? LLAMA_LOAD_MODE_MLOCK : LLAMA_LOAD_MODE_NONE);
     model_ = llama_model_load_from_file(path, mp);
     if (!model_) throw std::runtime_error("Cannot load GGUF model");
     llama_context_params cp = llama_context_default_params();
