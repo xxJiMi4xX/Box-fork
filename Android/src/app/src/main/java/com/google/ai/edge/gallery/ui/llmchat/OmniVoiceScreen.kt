@@ -428,7 +428,7 @@ fun OmniVoiceScreen(
                     if (modelLoaded && activeThreads != null) {
                         Text(
                             "Ενεργό backend: " +
-                                if (engine.lastLoadParams?.numGpuLayers == 0) "CPU"
+                                if (engine?.lastLoadParams?.numGpuLayers == 0) "CPU"
                                 else "Vulkan",
                             style = MaterialTheme.typography.bodySmall,
                         )
