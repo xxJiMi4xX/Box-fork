@@ -15,6 +15,7 @@ object VoiceGgufRuntimeSettings {
     private const val BATCH_THREADS_PREFIX = "batch_threads:"
     private const val GPU_LAYERS_PREFIX = "gpu_layers:"
     private const val GPU_PROJECTOR_PREFIX = "gpu_projector:"
+    private const val PERFORMANCE_CORES_PREFIX = "performance_cores:"
 
     fun maxCpuThreads(): Int =
         Runtime.getRuntime().availableProcessors().coerceIn(1, 32)
@@ -29,6 +30,9 @@ object VoiceGgufRuntimeSettings {
     fun setCpuThreads(context: Context, modelPath: String, threads: Int) {
         require(threads in 1..maxCpuThreads()) {
             "CPU thread count must be between 1 and ${maxCpuThreads()}"
+        }
+        require(!performanceCoresOnly(context, modelPath) || threads <= 4) {
+            "Four performance cores mode supports at most four decode threads"
         }
         check(
             context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -68,6 +72,18 @@ object VoiceGgufRuntimeSettings {
     fun setGpuProjector(context: Context, modelPath: String, enabled: Boolean) {
         check(context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit().putBoolean(GPU_PROJECTOR_PREFIX + modelPath, enabled).commit())
+    }
+
+    fun performanceCoresOnly(context: Context, modelPath: String): Boolean =
+        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(PERFORMANCE_CORES_PREFIX + modelPath, false)
+
+    fun setPerformanceCoresOnly(context: Context, modelPath: String, enabled: Boolean) {
+        require(!enabled || cpuThreads(context, modelPath) <= 4) {
+            "Choose at most four decode threads to use performance cores"
+        }
+        check(context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putBoolean(PERFORMANCE_CORES_PREFIX + modelPath, enabled).commit())
     }
 
     /** Opt-in until real-device audio correctness is confirmed. */
