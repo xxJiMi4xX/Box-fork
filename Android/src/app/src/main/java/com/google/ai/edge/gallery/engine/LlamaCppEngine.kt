@@ -10,6 +10,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -101,9 +102,11 @@ class LlamaCppEngine {
         // Close the captured instance only after any active JNI call releases
         // the native mutex. A subsequent model load cannot be closed by this job.
         val previous = instance
-        instance = SmolLM()
         scope.launch(Dispatchers.IO) {
-            nativeMutex.withLock { previous.close() }
+            nativeMutex.withLock {
+                previous.close()
+                if (instance === previous) instance = SmolLM()
+            }
         }
     }
 
@@ -178,7 +181,8 @@ class LlamaCppEngine {
                     var emittedLength = 0
                     var stopped = false
                     val duration = measureTime {
-                        model.getResponseAsFlow(query).collect { piece ->
+                        model.getResponseAsFlow(query).takeWhile { !stopped }
+                            .collect { piece ->
                             currentCoroutineContext().ensureActive()
                             if (stopped) return@collect
                             full.append(piece)

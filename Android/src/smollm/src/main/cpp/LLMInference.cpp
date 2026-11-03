@@ -165,6 +165,11 @@ void LLMInference::startCompletion(const char *query) {
         if (stopRequested_.load()) throw std::runtime_error("Prefill cancelled");
         auto count = static_cast<int32_t>(std::min(batchCap, tokens.size() - i));
         llama_batch batch = llama_batch_get_one(tokens.data() + i, count);
+        // embeddings=true is required for the speech decoder, but without an
+        // explicit logits mask it outputs logits for every prompt position.
+        std::vector<int8_t> logitsFlags(static_cast<size_t>(count), 0);
+        if (i + static_cast<size_t>(count) == tokens.size()) logitsFlags.back() = 1;
+        batch.logits = logitsFlags.data();
         if (llama_decode(context_, batch) != 0) throw std::runtime_error("Prompt decoding failed");
         contextUsed_ += count;
     }

@@ -313,8 +313,9 @@ fun ChatViewWrapper(
       if (task.id == BuiltInTaskId.LLM_CHAT &&
           GgufAudioFiles.isGguf(model.getPath(context))) {
         OmniProjectorPicker(model = model, context = context) {
-          modelManagerViewModel.cleanupModel(context = context, task = task, model = model)
-          modelManagerViewModel.initializeModel(context = context, task = task, model = model)
+          modelManagerViewModel.initializeModel(
+            context = context, task = task, model = model, force = true
+          )
         }
       }
       aboveInputComposable(model)
