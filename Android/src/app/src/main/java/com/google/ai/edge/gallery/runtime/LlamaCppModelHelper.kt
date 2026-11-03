@@ -117,6 +117,7 @@ object LlamaCppModelHelper : LlmModelHelper {
             },
             onError = { e ->
                 Log.e(TAG, "Failed to reset conversation for ${model.name}", e)
+                throw IllegalStateException("Native GGUF reset failed", e)
             },
         )
     }

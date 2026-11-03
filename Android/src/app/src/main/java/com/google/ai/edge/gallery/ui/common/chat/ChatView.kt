@@ -126,7 +126,13 @@ fun ChatView(
     val llmViewModel = viewModel as? com.google.ai.edge.gallery.ui.llmchat.LlmChatViewModelBase
       ?: return@LaunchedEffect
     val existingMessages = llmViewModel.uiState.value.messagesByModel[selectedModel.name]
-    if (!existingMessages.isNullOrEmpty()) return@LaunchedEffect  // already loaded for this model
+    if (!existingMessages.isNullOrEmpty()) {
+      // An explicitly different saved chat must replace the old UI messages.
+      if (conversationId == null || conversationId == llmViewModel.getCurrentConversationId()) {
+        return@LaunchedEffect
+      }
+      llmViewModel.clearAllMessages(selectedModel)
+    }
 
     val convId = if (conversationId != null) {
       conversationId
@@ -153,9 +159,7 @@ fun ChatView(
       llmViewModel.setCurrentConversationId(convId)
       // Load the system prompt for this conversation so the config dialog shows it.
       val conv = llmViewModel.getConversationById(convId)
-      if (conv?.systemPrompt?.isNotEmpty() == true) {
-        llmViewModel.setCurrentSystemPrompt(conv.systemPrompt)
-      }
+      llmViewModel.setCurrentSystemPrompt(conv?.systemPrompt.orEmpty())
     } else {
       Log.d(TAG, "No existing conversation for model ${selectedModel.name}, starting fresh")
     }

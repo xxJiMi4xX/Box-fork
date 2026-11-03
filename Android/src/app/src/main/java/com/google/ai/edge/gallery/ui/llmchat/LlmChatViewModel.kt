@@ -92,6 +92,8 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     currentConversationId = conversationId
   }
 
+  fun getCurrentConversationId(): String? = currentConversationId
+
   /**
    * Box: Look up the most recent conversation for a model (for auto-resume).
    */
@@ -455,27 +457,47 @@ open class LlmChatViewModelBase() : ChatViewModel() {
   ) {
     viewModelScope.launch(Dispatchers.Default) {
       setIsResettingSession(true)
-      clearAllMessages(model = model)
       stopResponse(model = model)
-
-      while (true) {
-        try {
-          model.runtimeHelper.resetConversation(
-            model = model,
-            supportImage = supportImage,
-            supportAudio = supportAudio,
-            systemInstruction = systemInstruction,
-            tools = tools,
-            enableConversationConstrainedDecoding = enableConversationConstrainedDecoding,
-          )
-          break
-        } catch (e: Exception) {
-          Log.d(TAG, "Failed to reset session. Trying again")
+      var resetSucceeded = false
+      var lastError: Exception? = null
+      try {
+        // A failing backend must not leave the UI in an endless retry loop.
+        for (attempt in 1..3) {
+          try {
+            model.runtimeHelper.resetConversation(
+              model = model,
+              supportImage = supportImage,
+              supportAudio = supportAudio,
+              systemInstruction = systemInstruction,
+              tools = tools,
+              enableConversationConstrainedDecoding = enableConversationConstrainedDecoding,
+            )
+            resetSucceeded = true
+            break
+          } catch (e: Exception) {
+            lastError = e
+            Log.e(TAG, "Session reset failed (attempt $attempt/3)", e)
+            if (attempt < 3) delay(200)
+          }
         }
-        delay(200)
+        if (resetSucceeded) {
+          conversationMutex.withLock {
+            // A reset creates a fresh encrypted conversation on the next turn.
+            currentConversationId = null
+          }
+          clearAllMessages(model = model)
+          onDone()
+        } else {
+          addMessage(
+            model = model,
+            message = ChatMessageError(
+              content = lastError?.message ?: "Could not reset the conversation",
+            ),
+          )
+        }
+      } finally {
+        setIsResettingSession(false)
       }
-      setIsResettingSession(false)
-      onDone()
     }
   }
 
