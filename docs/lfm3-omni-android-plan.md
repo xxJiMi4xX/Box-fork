@@ -78,6 +78,15 @@ Total estimated engineering budget: **39-69 hours**, excluding optional GPU acce
 - Device NPU validation (future, after an installable APK): 12 engineering hours estimated: SoC/runtime 2 h, compatible model 3 h, integration troubleshooting 4 h, real-device profiling and regression 3 h; model conversion excluded.
 - References: https://developers.google.com/edge/litert/next/mediatek , https://developers.google.com/edge/litert/next/litert_lm_npu , https://github.com/google-ai-edge/LiteRT/issues/6886
 
+## Validated implementation milestones (2026-11-03)
+
+1. **Complete original Box baseline:** [run #41656831949](https://github.com/xxJiMi4xX/Box-fork/actions/runs/41656831949) succeeded. Android build, LiteRT-LM dependency, MediaTek NPU shared objects and APK artifact confirmed. Device runtime not tested.
+2. **Isolated public-API llama.cpp v0.8.0 JNI:** [run #41658645319](https://github.com/xxJiMi4xX/Box-fork/actions/runs/41658645319) succeeded. The ARM64 build links one JNI shared object against static llama.cpp and libmtmd dependencies, while LiteRT-LM and NPU .so packaging still pass. Text inference itself remains unverified on device.
+3. **Model-matched mmproj loading:** commit `a520dcbf` adds a JNI method calling `mtmd_init_from_file`, checks `mtmd_support_audio`, `mtmd_support_vision`, `mtmd_gen_audio_get_info` and sample rates. [CI run #41660795505](https://github.com/xxJiMi4xX/Box-fork/actions/runs/41660795505) is the first build validating this API integration. No actual audio capture or generation has yet been wired into the Java/Kotlin app.
+4. **Still required:** projector import/selection and model pairing, microphone PCM16 processing and sample-rate conversion, `mtmd` media tokenization/encoding, decoder embedding batches, audio code generation/codec, `AudioTrack`, concurrency tests, Greek ASR and TTS device validation.
+
+**LFM3-Omni-specific requirements:** the model has a ChatML-like prompt with `<|startoftext|>`, `<|im_start|>`, `<|im_end|>` and an empty `<think></think>` at the start of assistant output. Official model card recommends greedy text decoding (`temperature=0`). These are model-specific details and should not become universal settings for other GGUF models. Official references: https://huggingface.co/LiquidAI/LFM3-Omni-2B and https://huggingface.co/LiquidAI/LFM3-Omni-2B-GGUF.
+
 ## Known blockers / caveats
 
 - No successful Android APK build has been observed on this fork before the baseline run.
