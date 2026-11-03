@@ -83,3 +83,12 @@
 - Import Model UI offers optional matching mmproj picker; imported file sidecar is staged under __imports and projectorFileName passed from ModelManagerViewModel to LlamaCppModelHelper → LlamaCppEngine → SmolLM.loadProjector.
 - MAX_TOKENS reaches a new native maxOutputTokens guard. Reset uses an in-place JNI session reset rather than reloading weights.
 - All above are **code-only/unbuilt** and require CI then actual device verification in the integrated release, not a claim that features now work in the installed APK.
+
+## M2 — ιστορικό UI→JNI / εναλλαγή συνεδρίας (πηγαίος κώδικας)
+
+- `ChatView` → `LlmChatViewModel.generateResponse`: τα UI ChatMessageText user/agent μετατρέπονται σε chronological list προηγούμενων turns· το τρέχον user input εξαιρείται επειδή ο native generator το προσθέτει ο ίδιος.
+- `LlamaCppModelHelper.setNextConversationSnapshot` → `LlamaCppEngine.generateResponse`: native `SmolLM.resetSession()`, set system prompt, replay previous messages, κατόπιν startGeneration με νέο input. Η ιστορία φορτώνεται στην έναρξη του γύρου ανεξαρτήτως του timing του προηγούμενου Room restore / model load.
+- `ChatView`: σε ρητή επιλογή διαφορετικού saved conversation ID, η οθόνη δεν διατηρεί τα μηνύματα του προηγούμενου· νέο conversation prompt ενημερώνεται ακόμη κι αν είναι κενό.
+- `LlmChatViewModel.resetSession`: bounded retries, έπειτα επιτυχημένο reset νέο DB conversation ID, ορατή αποτυχία αντί άπειρου loading.
+- `omni_native.cpp`: `llama_sampler_accept` για prompt/generated tokens προκειμένου να δουλεύει η ακολουθία sampler penalties.
+- **Όλα εκκρεμούν για πραγματικό compile, integration tests και συσκευή.** Σημαντικό υπόλοιπο: απροστάτευτη ταυτόχρονη εγγραφή Room κοντά σε reset, πραγματική μέτρηση prompt tokens, concurrency lifecycle και stress με μεγάλα history.

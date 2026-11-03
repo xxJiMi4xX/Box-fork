@@ -41,3 +41,13 @@
 Ημερομηνία, branch, commit, toolchain, CI link/status, artifact, συσκευή, μοντέλο/mmproj, actual backend proof, συγκρίσιμες μετρήσεις, λειτουργικά tests, regression, αποτυχίες, διορθώσεις, επόμενο βήμα.
 
 Η τεκμηρίωση από μόνη της δεν πρέπει να ενεργοποιεί καινούργιο build. Για docs-only commits χρησιμοποιείται [skip ci] και έλεγχος workflow filters.
+
+## M2 acceptance tests (συμπεριλαμβάνονται στο προηγούμενο QA budget)
+
+- [ ] Άνοιγμα αποθηκευμένης ελληνικής συνομιλίας 5+ user/assistant turns, νέο follow-up που αναφέρεται σε παλιά λεπτομέρεια: σύγκριση UI history και native content. **2 ώρες**.
+- [ ] Αλλαγή μεταξύ δύο `conversationId` ίδιου GGUF μοντέλου, επαναφορά σωστού system prompt και αποφυγή ανάμιξης ιστορικού. **1 ώρα**.
+- [ ] Reset συνεδρίας, νέο μήνυμα, επανεκκίνηση εφαρμογής, έλεγχος ότι δημιουργήθηκε νέο DB conversation και δεν χάθηκε το παλιό. **1 ώρα**.
+- [ ] Sampling test με ίδια prompt/settings/seed, διαφορετικό repeatPenalty, επιβεβαίωση ότι native sampler δέχεται prompt και generated tokens. **1 ώρα**.
+- [ ] Failure test reset όταν backend δεν είναι loaded: χωρίς ατέρμονο spinner, διατήρηση ιστορικού και καταγραφή σφάλματος. **1 ώρα**.
+
+Οι 6 ώρες περιλαμβάνονται στον προϋπολογισμό QA του `PLAN_NEXT_APK.md` και δεν αυξάνουν το σύνολο. Όλα τα παραπάνω είναι **εκκρεμή** και όχι περασμένα τεστ.

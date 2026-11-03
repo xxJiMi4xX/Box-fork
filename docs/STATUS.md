@@ -44,3 +44,7 @@
 **Committed, UNVERIFIED:** LLAMA_CPP type, honest CPU/text-only GGUF capability display, mmproj import/persistence/wiring, native output-token cap, in-place session reset. Commits 2c17eab, f0d6245, a91c4a1, 1cd165f, 5304790. Αυτά είναι αδοκίμαστα source patches. Τα προηγούμενα «λείπουν» αφορούσαν το τελευταίο εγκατεστημένο APK (commit a520dcbf), όχι τον πλέον ενημερωμένο GitHub κώδικα.
 
 **Remaining:** rebuild/integration validation later as ONE candidate; actual mmproj capability probe on device, real image/audio, native speech output, Greek Voice Conversation, real Vulkan offload, MediaTek NPU verification/unsupported, full UI/settings/security audit, LiteRT regression.
+
+## Μ2: GGUF history / sampling / reset — source-only (2026-11-03)
+
+Commits `e208757`, `db2d756`, `add4e92`. Προστέθηκε μετάδοση UI/Room ιστορικού και system prompt προς GGUF native state στον κάθε γύρο, χρήση `llama_sampler_accept` σε prompt και generated tokens, σωστή εναλλαγή explicit saved conversation, νέα ταυτότητα αποθήκευσης μετά reset και ανώτατο όριο retry. Τα παραπάνω είναι **μη επαληθευμένα σε build/runtime**. Το τελευταίο πραγματικά εγκατεστημένο APK εξακολουθεί να είναι από το `a520dcbf`. GPU/NPU, Greek voice, image/audio και video δεν λειτουργούν ακόμη στην εφαρμογή.

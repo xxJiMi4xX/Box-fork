@@ -63,3 +63,12 @@
 - **Commit 5304790:** in-place native reset ιστορικού/KV cache χωρίς επαναφόρτωση μοντέλου/projector.
 - **Verification:** Source review only· **ούτε build ούτε real-device tests**. Αλλαγές σκόπιμα σημειώνονται [skip ci] ώστε να αποφευχθεί ενδιάμεσο APK.
 - **Συνέχεια:** system prompt/history, CPU/GPU verification, multimodal audio/video paths, Greek Voice Conversation, privacy/settings, integrated CI και full acceptance gates.
+
+## 2026-11-03 — Μ2: επανόρθωση συνομιλίας και συμπεριφορά native sampler (source-only)
+
+- **Commit [e208757](https://github.com/xxJiMi4xX/Box-fork/commit/e2087570d9cd28e4eaffc19a284e2bd36c80f655):** LlmChatViewModel συσχετίζει το εμφανιζόμενο ιστορικό και το τρέχον system prompt με την αμέσως επόμενη GGUF inference. Προηγούμενα user/assistant turns περνούν στο JNI μετά από context-only reset, χωρίς δεύτερη προσθήκη του τωρινού user input. Αυτό αφορά επίσης συνομιλίες που επαναφέρθηκαν από Room ενώ το μοντέλο φορτωνόταν.
+- **Ίδιο commit:** Το LlamaCppEngine.resetConversation έγινε συγχρονισμένο ως προς το background caller, ώστε η ViewModel να μην θεωρεί ολοκληρωμένο ένα reset που ακόμη εκτελείται. Το llama_sampler_accept ενημερώνεται για κάθε token που παράγεται ώστε να λειτουργούν οι repetition penalties.
+- **Commit [db2d756](https://github.com/xxJiMi4xX/Box-fork/commit/db2d756bfaaf88c92702710786d81c2568320b39):** αλλαγή ρητά επιλεγμένου conversationId στο ίδιο μοντέλο αντικαθιστά τα παλιά εμφανιζόμενα μηνύματα, και καθαρίζει stale system prompt. Reset νέας συνεδρίας αποδεσμεύει το παλιό ID αποθήκευσης μόνο μετά επιτυχημένο reset. Retry budget 3 αντί για άπειρο loop, εμφάνιση error αν αποτύχει.
+- **Commit [add4e92](https://github.com/xxJiMi4xX/Box-fork/commit/add4e92e2ef1057777e7d1bb7ec135a2338e93ee):** προφόρτωση sampler repeat-penalty history με τα prompt tokens πριν αρχίσει το decode, εκτός από τα generated tokens.
+- **Επαλήθευση:** ΠΡΟΣΟΧΗ, μόνο πηγαίος κώδικας και στατική αντιπαραβολή με το pinned llama.cpp API (llama_sampler_accept, llama_memory_clear, llama_get_memory). **Χωρίς compile, CI, APK, πραγματική εκτέλεση ή benchmark.**
+- **Παραμένουσες αβεβαιότητες:** διερεύνηση chat-template LFM3 στον πραγματικό native decoder, concurrency/cancellation κατά φόρτωση και επαναφορά, δυνατότητα σφάλματος από ανολοκλήρωτα μηνύματα στη βάση, περιβάλλον GPU/NPU. Native image/audio και Greek Voice Conversation δεν έχουν υλοποιηθεί.

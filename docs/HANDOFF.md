@@ -53,3 +53,11 @@ AGENTS.md → docs/HANDOFF.md → docs/STATUS.md → docs/PLAN_NEXT_APK.md → d
 ## Milestone M1 — actual source implementation (2026-11-03)
 
 Η έναρξη εγκρίθηκε («Ξεκίνα»). Τα commits 2c17eab, f0d6245, a91c4a1, 1cd165f, 5304790 έχουν περαστεί στη branch feature/gguf-v080-native. Δίνουν: αληθινό GGUF runtime type και CPU-only UI (προς το παρόν), disabled unsupported capabilities, persistent projector filename/proto fields, UI mmproj picker και staged import δύο αρχείων, wiring υπάρχοντος JNI projector loader, πραγματικό native max output tokens, in-place native reset. **ΔΕΝ ΕΧΟΥΝ ΜΕΤΑΓΛΩΤΤΙΣΤΕΙ Ή ΔΟΚΙΜΑΣΤΕΙ ΣΕ APK** και δεν υπάρχει ακόμη πολυτροπική εικόνα/φωνή. Μην πεις ότι η φωνητική συνομιλία υλοποιήθηκε. Τρέχον πλήρες R1 scope/ώρες: docs/PLAN_NEXT_APK.md. Επόμενο: static/source review, prompt/history και Greek audio bridge, χωρίς interim APK.
+
+## Μ2 — αλλαγές source στην τροφοδότηση ιστορικού (2026-11-03)
+
+Η συνέχεια του M1 περιλαμβάνει:
+- `e208757` — visible UI/Room history + system prompt → GGUF JNI πριν από generation, native sampler acceptance παραγόμενων tokens, synchronous reset.
+- `db2d756` — αλλαγή σε διαφορετικό explicit saved chat επαναφέρει τα σωστά UI μηνύματα, το session reset δημιουργεί νέο conversationId μετά από επιτυχία, τερματισμός reset έπειτα από 3 failures.
+- `add4e92` — sampler history περιλαμβάνει και prompt tokens, όχι μόνο generated.
+**Μόνο source commits.** Τα bugs/fixes είναι συγκεκριμένα αλλά **καμία λειτουργία από αυτά δεν έχει επαληθευτεί από build ή πραγματική συσκευή**. Η επόμενη μεγάλη τεχνική διαδρομή είναι model-native LFM3 voice (mtmd input και native gen_audio, Greek speech), μαζί με Vulkan GPU και ενιαία επιθεώρηση settings. Η release scope παραμένει `PLAN_NEXT_APK.md`; όχι ενδιάμεσο APK.
