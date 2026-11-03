@@ -48,6 +48,7 @@ class OmniLiveVoiceController(private val context: Context) {
 
     private val lock = Any()
     private var captureJob: Job? = null
+    private var retiringJob: Job? = null
     private var recorder: AudioRecord? = null
     private var focusRequest: AudioFocusRequest? = null
 
@@ -57,6 +58,7 @@ class OmniLiveVoiceController(private val context: Context) {
         val (job, record) = synchronized(lock) {
             val previous = captureJob
             captureJob = null
+            if (previous != null) retiringJob = previous
             val old = recorder
             recorder = null
             previous to old
@@ -83,7 +85,11 @@ class OmniLiveVoiceController(private val context: Context) {
         check(ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED) { "Δεν έχει δοθεί άδεια μικροφώνου" }
         stop()
+        val retired = synchronized(lock) { retiringJob }
         val job = scope.launch(Dispatchers.IO) {
+            // Wait until the previous AudioRecord and audio focus are actually
+            // released; Android rejects overlapping capture sessions on some devices.
+            retired?.join()
             val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
             val attributes = AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
@@ -123,11 +129,15 @@ class OmniLiveVoiceController(private val context: Context) {
                     "Η αρχικοποίηση του μικροφώνου απέτυχε"
                 }
                 if (AcousticEchoCanceler.isAvailable()) {
-                    echo = AcousticEchoCanceler.create(audioRecord.audioSessionId)
+                    echo = runCatching {
+                        AcousticEchoCanceler.create(audioRecord.audioSessionId)
+                    }.getOrNull()
                     runCatching { echo?.enabled = true }
                 }
                 if (NoiseSuppressor.isAvailable()) {
-                    suppressor = NoiseSuppressor.create(audioRecord.audioSessionId)
+                    suppressor = runCatching {
+                        NoiseSuppressor.create(audioRecord.audioSessionId)
+                    }.getOrNull()
                     runCatching { suppressor?.enabled = true }
                 }
                 if (!currentCoroutineContext().isActive) return@launch
@@ -241,6 +251,7 @@ class OmniLiveVoiceController(private val context: Context) {
                 synchronized(lock) {
                     if (recorder === record) recorder = null
                     if (focusRequest === focus) focusRequest = null
+                    if (retiringJob === currentCoroutineContext()[Job]) retiringJob = null
                 }
                 runCatching { echo?.release() }
                 runCatching { suppressor?.release() }
