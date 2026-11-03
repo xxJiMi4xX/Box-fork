@@ -57,6 +57,6 @@ private:
 
     std::vector<llama_token> tokenize(const std::string &str);
     std::string tokenToPiece(llama_token token);
-    void finishGeneration();
+    void finishGeneration(bool commitResponse);
     static bool validUtf8(const std::string &bytes);
 };

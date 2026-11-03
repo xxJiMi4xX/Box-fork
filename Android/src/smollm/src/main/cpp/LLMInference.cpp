@@ -222,9 +222,11 @@ void LLMInference::startCompletion(const char *query) {
         if (llama_decode(context_, batch) != 0) throw std::runtime_error("Prompt decoding failed");
         contextUsed_ += count;
     }
+    beforeGeneration_ = historyBackup;
     generating_ = true;
     } catch (...) {
         messages_ = historyBackup;
+        beforeGeneration_.clear();
         generating_ = false;
         response_.clear();
         pendingUtf8_.clear();
@@ -254,30 +256,42 @@ bool LLMInference::validUtf8(const std::string &bytes) {
     return true;
 }
 
-void LLMInference::finishGeneration() {
+void LLMInference::finishGeneration(bool commitResponse) {
     if (!generating_) return;
     generating_ = false;
-    if (!pendingUtf8_.empty()) pendingUtf8_.clear();
-    if (!response_.empty()) messages_.emplace_back("assistant", response_);
+    pendingUtf8_.clear();
+    if (!commitResponse) {
+        // Cancelling a turn must not leave a dangling user instruction
+        // or a partial assistant response in the next generation.
+        messages_ = std::move(beforeGeneration_);
+        response_.clear();
+    } else {
+        if (!response_.empty()) messages_.emplace_back("assistant", response_);
+        beforeGeneration_.clear();
+    }
 }
 
 std::string LLMInference::completionLoop() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!generating_) return "[EOG]";
-    if (stopRequested_.load() || contextUsed_ + 1 >= static_cast<int>(llama_n_ctx(context_))) {
-        finishGeneration();
+    if (stopRequested_.load()) {
+        finishGeneration(false);
+        return "[EOG]";
+    }
+    if (contextUsed_ + 1 >= static_cast<int>(llama_n_ctx(context_))) {
+        finishGeneration(true);
         return "[EOG]";
     }
     int64_t start = llama_time_us();
     llama_token token = llama_sampler_sample(sampler_, context_, -1);
     if (llama_vocab_is_eog(llama_model_get_vocab(model_), token)) {
-        finishGeneration();
+        finishGeneration(true);
         return "[EOG]";
     }
     std::string piece = tokenToPiece(token);
     llama_batch batch = llama_batch_get_one(&token, 1);
     if (llama_decode(context_, batch) != 0) {
-        finishGeneration();
+        finishGeneration(false);
         throw std::runtime_error("Token decoding failed");
     }
     contextUsed_ += 1;
@@ -300,7 +314,7 @@ void LLMInference::requestStop() noexcept { stopRequested_.store(true); }
 void LLMInference::stopCompletion() {
     stopRequested_.store(true);
     std::lock_guard<std::mutex> lock(mutex_);
-    finishGeneration();
+    finishGeneration(false);
 }
 
 std::string LLMInference::benchModel(int, int, int, int) {
