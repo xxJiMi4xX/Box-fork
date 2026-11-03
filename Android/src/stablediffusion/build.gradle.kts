@@ -9,6 +9,9 @@ extensions.configure<com.android.build.api.dsl.LibraryExtension>("android") {
     ndkVersion = "27.2.12479018"
 
     defaultConfig {
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
         minSdk = 30
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")

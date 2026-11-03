@@ -34,6 +34,9 @@ extensions.configure<com.android.build.api.dsl.ApplicationExtension>("android") 
 
   defaultConfig {
     applicationId = "com.box.gallery"
+    ndk {
+      abiFilters += "arm64-v8a"
+    }
     minSdk = 35
     targetSdk = 37
     versionCode = 26
@@ -67,6 +70,14 @@ extensions.configure<com.android.build.api.dsl.ApplicationExtension>("android") 
     compose = true
     buildConfig = true
     resValues = true
+  }
+
+  // LiteRT-LM resolves vendor dispatch .so files using applicationInfo.nativeLibraryDir.
+  // Extraction gives those libraries a real filesystem location on Android.
+  packaging {
+    jniLibs {
+      useLegacyPackaging = true
+    }
   }
 }
 

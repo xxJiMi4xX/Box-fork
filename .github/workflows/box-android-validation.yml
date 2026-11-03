@@ -60,6 +60,15 @@ jobs:
             "cmake;3.22.1"
           test -f "$ANDROID_HOME/ndk/27.2.12479018/source.properties"
 
+      - name: Check bundled MediaTek LiteRT NPU libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s Android/src/app/src/main/jniLibs/arm64-v8a/libLiteRtDispatch_MediaTek.so
+          test -s Android/src/app/src/main/jniLibs/arm64-v8a/libLiteRtCompilerPlugin_MediaTek.so
+          file Android/src/app/src/main/jniLibs/arm64-v8a/libLiteRtDispatch_MediaTek.so
+          file Android/src/app/src/main/jniLibs/arm64-v8a/libLiteRtCompilerPlugin_MediaTek.so
+
       - name: Build complete Box debug APK (including unchanged LiteRT-LM)
         working-directory: Android/src
         shell: bash
@@ -67,6 +76,18 @@ jobs:
           set -euo pipefail
           chmod +x ./gradlew
           ./gradlew :app:assembleDebug --no-daemon --stacktrace --console=plain --max-workers=2
+
+      - name: Verify MediaTek LiteRT NPU libraries are packaged in APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apks=(Android/src/app/build/outputs/apk/debug/*.apk)
+          test "${#apks[@]}" -eq 1
+          apk="${apks[0]}"
+          unzip -Z1 "$apk" | grep -Fx "lib/arm64-v8a/libLiteRtDispatch_MediaTek.so"
+          unzip -Z1 "$apk" | grep -Fx "lib/arm64-v8a/libLiteRtCompilerPlugin_MediaTek.so"
+          echo "MediaTek NPU dispatch/compiler libraries confirmed in $apk"
 
       - name: Upload debug APK if build succeeds
         uses: actions/upload-artifact@v4
