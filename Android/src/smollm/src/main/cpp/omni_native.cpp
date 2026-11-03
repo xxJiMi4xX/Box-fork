@@ -111,7 +111,8 @@ class Inference final {
 public:
     Inference(const std::string & filename, float minP, float temperature, float topP, int topK,
               float repeatPenalty, bool storeChats, int64_t contextSize, const std::string & chatTemplate,
-              int threads, bool mmap, bool mlock) : storeChats_(storeChats) {
+              int threads, bool mmap, bool mlock, int maxOutputTokens)
+              : storeChats_(storeChats), maxOutputTokens_(std::clamp(maxOutputTokens, 1, 4096)) {
         static std::once_flag once;
         std::call_once(once, [] { llama_backend_init(); });
         if (filename.empty()) throw std::invalid_argument("Model path is empty");
@@ -291,7 +292,8 @@ public:
             finalize();
             return "[EOG]";
         }
-        if (!hasLogits_ || decodedPosition_ >= static_cast<int32_t>(llama_n_ctx(context_.get()) - 1)) {
+        if (!hasLogits_ || generated_ >= maxOutputTokens_ ||
+            decodedPosition_ >= static_cast<int32_t>(llama_n_ctx(context_.get()) - 1)) {
             finalize();
             return "[EOG]";
         }
@@ -384,6 +386,7 @@ private:
     std::string response_;
     std::string utf8Pending_;
     bool storeChats_ = true;
+    int32_t maxOutputTokens_ = 1024;
     bool generationActive_ = false;
     bool turnStored_ = false;
     bool hasLogits_ = false;
@@ -420,7 +423,8 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_com_jegly_offlineLLM_smollm_SmolLM_loadModel(
     JNIEnv * env, jobject, jstring modelPath, jfloat minP, jfloat temperature,
     jfloat topP, jint topK, jfloat repeatPenalty, jboolean storeChats,
-    jlong contextSize, jstring chatTemplate, jint nThreads, jboolean mmap, jboolean mlock) {
+    jlong contextSize, jstring chatTemplate, jint nThreads, jboolean mmap, jboolean mlock,
+    jint maxOutputTokens) {
     jlong handle = 0;
     invokeVoid(env, [&] {
         JavaString path(env, modelPath);
@@ -428,7 +432,7 @@ Java_com_jegly_offlineLLM_smollm_SmolLM_loadModel(
         auto engine = std::make_shared<Inference>(
             path.c_str(), minP, temperature, topP, topK, repeatPenalty,
             storeChats == JNI_TRUE, contextSize, tmpl.c_str(), nThreads,
-            mmap == JNI_TRUE, mlock == JNI_TRUE);
+            mmap == JNI_TRUE, mlock == JNI_TRUE, maxOutputTokens);
         handle = nextHandle.fetch_add(1, std::memory_order_relaxed);
         std::lock_guard<std::mutex> guard(registryMutex);
         registry.emplace(handle, std::move(engine));

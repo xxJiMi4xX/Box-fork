@@ -7,6 +7,7 @@ import com.google.ai.edge.gallery.data.ConfigKeys
 import com.google.ai.edge.gallery.data.DEFAULT_TEMPERATURE
 import com.google.ai.edge.gallery.data.DEFAULT_TOPK
 import com.google.ai.edge.gallery.data.DEFAULT_TOPP
+import com.google.ai.edge.gallery.data.DEFAULT_MAX_TOKEN
 import com.google.ai.edge.gallery.data.Model
 import com.google.ai.edge.gallery.data.IMPORTS_DIR
 import com.google.ai.edge.gallery.engine.LlamaCppEngine
@@ -57,6 +58,10 @@ object LlamaCppModelHelper : LlmModelHelper {
             projectorPath = model.projectorFileName.takeIf { it.isNotBlank() }?.let { name ->
                 model.getPath(context, "$IMPORTS_DIR/$name")
             },
+            maxOutputTokens = model.getIntConfigValue(
+                ConfigKeys.MAX_TOKENS,
+                model.llmMaxToken.takeIf { it > 0 } ?: DEFAULT_MAX_TOKEN,
+            ).coerceIn(1, 4096),
         )
 
         engine.loadModel(

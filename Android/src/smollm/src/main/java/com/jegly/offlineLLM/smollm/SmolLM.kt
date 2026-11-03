@@ -27,6 +27,7 @@ class SmolLM {
         val useMmap: Boolean = true,
         val useMlock: Boolean = false,
         val projectorPath: String? = null,
+        val maxOutputTokens: Int = 1024,
     )
 
     object DefaultParams {
@@ -51,6 +52,7 @@ class SmolLM {
                 params.numThreads,
                 params.useMmap,
                 params.useMlock,
+                params.maxOutputTokens,
             )
             check(handle != 0L) { "Native model loading failed." }
             try {
@@ -175,7 +177,7 @@ class SmolLM {
     private external fun loadModel(
         modelPath: String, minP: Float, temperature: Float, topP: Float, topK: Int,
         repeatPenalty: Float, storeChats: Boolean, contextSize: Long, chatTemplate: String,
-        nThreads: Int, useMmap: Boolean, useMlock: Boolean
+        nThreads: Int, useMmap: Boolean, useMlock: Boolean, maxOutputTokens: Int
     ): Long
 
     private external fun loadProjectorNative(modelPtr: Long, mmprojPath: String): IntArray
