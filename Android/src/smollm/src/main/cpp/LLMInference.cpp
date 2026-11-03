@@ -495,8 +495,9 @@ std::vector<uint8_t> LLMInference::synthesizeSpeech(const std::string &text) {
     }
     // Match upstream llama.cpp TTS's discrete sampling protocol. LFM3's
     // audio mode consumes the hidden-state embedding and ignores this token.
+    // llama_sampler_sample() already accepts the sampled token in pinned
+    // llama.cpp v0.8.0. Never call llama_sampler_accept() again here.
     llama_token semantic = llama_sampler_sample(sampler_, context_, -1);
-    llama_sampler_accept(sampler_, semantic);
     const float *hidden = llama_get_embeddings_ith(context_, -1);
     if (!hidden) throw std::runtime_error("Speech decoder returned no hidden state");
     bool done = false;
@@ -511,7 +512,6 @@ std::vector<uint8_t> LLMInference::synthesizeSpeech(const std::string &text) {
         }
         hidden = nextHidden;
         semantic = llama_sampler_sample(sampler_, context_, -1);
-        llama_sampler_accept(sampler_, semantic);
     }
     if (stopRequested_.load()) throw std::runtime_error("Speech generation cancelled");
     if (!done) throw std::runtime_error("Speech decoder reached frame cap without audio EOS");
