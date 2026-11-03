@@ -28,6 +28,9 @@ val Model.runtimeHelper: LlmModelHelper
     if (this.runtimeType == RuntimeType.AICORE) {
       return AICoreModelHelper
     }
+    if (this.runtimeType == RuntimeType.LLAMA_CPP) {
+      return LlamaCppModelHelper
+    }
     // Box: Route GGUF models through llama.cpp engine
     // For imported models, downloadFileName includes the IMPORTS_DIR prefix, so extract just the filename
     val fileNameToCheck = if (imported && downloadFileName.startsWith("$IMPORTS_DIR/")) {

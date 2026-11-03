@@ -45,3 +45,10 @@
 - **Προηγούμενο αποτέλεσμα:** `llama-server` στο Poco X6 Pro 12 GB, localhost:8080, ctx 4096, 4 threads. Ελληνική προφορική ερώτηση («5+7») παρήγαγε σωστό γραπτό «12». Το `/tts` παρήγαγε κατανοητή ελληνική γυναικεία φωνή, σε WAV 24 kHz. Realtime HTML voice υπέφερε από διακοπές/κακή ελληνική συμπεριφορά.
 - **Διόρθωση τεχνικού σχεδίου:** Greek speech input/output είναι ήδη *device-observed στο Termux*, και δεν χρειάζεται να δηλωθεί εκ νέου ανεπιβεβαίωτη ιδιότητα του μοντέλου. Αντίθετα, το Box JNI **δεν** έχει ακόμη ενσωματώσει αυτή την ηχητική διαδρομή και απαιτεί ξεχωριστή απόδειξη.
 - **Αλλαγή scope:** Μεταφέρουμε το ήδη επιτυχημένο native speech path και δημιουργούμε Greek-first model-agnostic Voice Conversation. **Καμία αλλαγή στον app runtime και κανένα νέο APK σε αυτό το βήμα.**
+
+## 2026-11-03 — Implementation WIP: backend identity and honest GGUF capabilities
+
+- Imported GGUF classified as `RuntimeType.LLAMA_CPP` instead of LiteRT-LM. Existing imported GGUF is normalized on model reconstruction, no destructive migration.
+- Until native GGUF media inference works, imported image/audio/actions/thinking flags cannot masquerade as supported UI features. GGUF accelerator is limited to CPU in this build regardless of historic import checkboxes.
+- GGUF removed from AgentChat registration since that task calls LiteRT directly. Separate LiteRT model behavior is preserved.
+- Source-level patch only, no new APK or actual device validation. Remaining: mmproj picker and native wiring, text correctness, GPU/NPU, voice and full QA.

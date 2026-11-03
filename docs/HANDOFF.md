@@ -45,3 +45,7 @@ AGENTS.md → docs/HANDOFF.md → docs/STATUS.md → docs/PLAN_NEXT_APK.md → d
 ## Κρίσιμο προηγούμενο τεστ προς ανάκτηση — Termux Greek speech (2026-11-03)
 
 Ο χρήστης υπενθύμισε επιτυχείς δοκιμές ΠΡΙΝ από το Box APK, στο **Termux** της ίδιας συσκευής: `llama-server` με `LFM3-Omni-2B-Q8_0.gguf` + `mmproj-LFM3-Omni-2B-Q8_0.gguf`, 4096 context, 4 CPU threads, `127.0.0.1:8080`. Ελληνική φωνητική είσοδος **λειτούργησε** («5+7» → «12»), καθώς και ελληνικό `/tts` με κατανοητή γυναικεία φωνή (WAV 24 kHz). ΑΛΛΑ το realtime HTML είχε διακοπές/προβλήματα ελληνικής φωνής. **Μην ξαναχαρακτηρίσεις τη βασική ελληνική ASR/TTS ως άγνωστη δυνατότητα του LFM3 στην ίδια συσκευή.** Ξεχώρισε απολύτως την επιτυχία Termux reference server από την ακόμη ανύπαρκτη audio σύνδεση του Box JNI. Επόμενος στόχος: μεταφορά του reference speech path, σταθερό Voice Conversation UI και υποστήριξη ελληνικών σε κάθε άλλο μοντέλο που το αποδεικνύει. Αναλυτικά `docs/DEVICE_TESTS.md`.
+
+## Ενεργή ανάπτυξη — πρώτο source patch (2026-11-03)
+
+Ξεκίνησε η υλοποίηση του ενιαίου σχεδίου. Πρώτο patch: διακριτό `RuntimeType.LLAMA_CPP` στα εισαγόμενα GGUF, ασφαλής κανονικοποίηση παλιών import flags σε CPU-only/text-only, και εξαίρεση GGUF από Agent Chat που χρησιμοποιεί LiteRT απευθείας. Δεν έγινε νέο APK. Επόμενο: πλήρης εισαγωγή/μόνιμη σύνδεση `mmproj`, και μετά text correctness/voice/hardware. Ελέγξτε HEAD και CI πριν θεωρήσετε το patch επικυρωμένο.

@@ -634,7 +634,9 @@ constructor(
           (task.id == BuiltInTaskId.LLM_MOBILE_ACTIONS && model.llmSupportMobileActions) ||
           (task.id != BuiltInTaskId.LLM_ASK_IMAGE &&
             task.id != BuiltInTaskId.LLM_ASK_AUDIO &&
-            task.id != BuiltInTaskId.LLM_MOBILE_ACTIONS)
+            task.id != BuiltInTaskId.LLM_MOBILE_ACTIONS &&
+            (task.id != BuiltInTaskId.LLM_AGENT_CHAT ||
+              model.runtimeType != RuntimeType.LLAMA_CPP))
       ) {
         task.models.add(model)
         model.preProcess()
@@ -1183,7 +1185,9 @@ constructor(
       // Add to task.
       tasks.get(key = BuiltInTaskId.LLM_CHAT)?.models?.add(model)
       tasks.get(key = BuiltInTaskId.LLM_PROMPT_LAB)?.models?.add(model)
-      tasks.get(key = BuiltInTaskId.LLM_AGENT_CHAT)?.models?.add(model)
+      if (model.runtimeType != RuntimeType.LLAMA_CPP) {
+        tasks.get(key = BuiltInTaskId.LLM_AGENT_CHAT)?.models?.add(model)
+      }
       if (model.llmSupportImage) {
         tasks.get(key = BuiltInTaskId.LLM_ASK_IMAGE)?.models?.add(model)
       }
@@ -1233,8 +1237,9 @@ constructor(
   }
 
   private fun createModelFromImportedModelInfo(info: ImportedModel): Model {
+    val isGguf = info.fileName.endsWith(".gguf", ignoreCase = true)
     val accelerators: MutableList<Accelerator> =
-      info.llmConfig.compatibleAcceleratorsList
+      (if (isGguf) listOf(Accelerator.CPU.label) else info.llmConfig.compatibleAcceleratorsList)
         .mapNotNull { acceleratorLabel ->
           when (acceleratorLabel.trim()) {
             Accelerator.GPU.label -> Accelerator.GPU
@@ -1244,12 +1249,14 @@ constructor(
           }
         }
         .toMutableList()
+    if (accelerators.isEmpty()) accelerators.add(Accelerator.CPU)
     val llmMaxToken = info.llmConfig.defaultMaxTokens
-    val llmSupportImage = info.llmConfig.supportImage
-    val llmSupportAudio = info.llmConfig.supportAudio
+    // Until real GGUF multimodal execution is wired, imported metadata cannot enable it.
+    val llmSupportImage = !isGguf && info.llmConfig.supportImage
+    val llmSupportAudio = !isGguf && info.llmConfig.supportAudio
     val llmSupportTinyGarden = info.llmConfig.supportTinyGarden
-    val llmSupportMobileActions = info.llmConfig.supportMobileActions
-    val llmSupportThinking = info.llmConfig.supportThinking
+    val llmSupportMobileActions = !isGguf && info.llmConfig.supportMobileActions
+    val llmSupportThinking = !isGguf && info.llmConfig.supportThinking
     val configs: MutableList<Config> =
       createLlmChatConfigs(
           defaultMaxToken = llmMaxToken,
@@ -1279,7 +1286,7 @@ constructor(
         accelerators = accelerators,
         // We assume all imported models are LLM for now.
         isLlm = true,
-        runtimeType = RuntimeType.LITERT_LM,
+        runtimeType = if (isGguf) RuntimeType.LLAMA_CPP else RuntimeType.LITERT_LM,
       )
     model.preProcess()
 
