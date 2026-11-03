@@ -72,6 +72,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
   override lateinit var chatRepository: ChatRepository
   // Model-scoped session IDs: never share one Room conversation among models.
   private val conversationIds = ConcurrentHashMap<String, String>()
+  private val systemPromptsByModel = ConcurrentHashMap<String, String>()
   @Volatile private var selectedConversationModel: String = ""
   @Volatile private var selectedConversationModelObject: Model? = null
   private val conversationMutex = Mutex()
@@ -103,10 +104,15 @@ open class LlmChatViewModelBase() : ChatViewModel() {
 
   fun setCurrentSystemPrompt(prompt: String) {
     _currentSystemPrompt.value = prompt
+    val modelName = selectedConversationModel
+    if (modelName.isNotBlank()) systemPromptsByModel[modelName] = prompt
   }
 
   fun updateSystemPrompt(prompt: String) {
     _currentSystemPrompt.value = prompt
+    if (selectedConversationModel.isNotBlank()) {
+      systemPromptsByModel[selectedConversationModel] = prompt
+    }
     val model = selectedConversationModelObject ?: return
     val modelName = model.name
     val convId = conversationIds[modelName]
@@ -151,6 +157,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
   fun setCurrentConversationModel(model: Model) {
     selectedConversationModel = model.name
     selectedConversationModelObject = model
+    _currentSystemPrompt.value = systemPromptsByModel[model.name] ?: ""
   }
 
   fun getCurrentConversationId(model: Model): String? = conversationIds[model.name]
@@ -176,7 +183,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
         title = "New Chat",
         taskType = "llm_chat",
         modelName = model.name,
-        systemPrompt = _currentSystemPrompt.value,
+        systemPrompt = systemPromptsByModel[model.name] ?: "",
       )
       conversationIds[model.name] = fresh.id
     }
@@ -294,7 +301,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
         title = "New Chat",
         taskType = "llm_chat",
         modelName = model.name,
-        systemPrompt = _currentSystemPrompt.value,
+        systemPrompt = systemPromptsByModel[model.name] ?: "",
       ).id.also { id -> conversationIds[model.name] = id }
     }
 
@@ -381,7 +388,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
               title = content.take(50),
               taskType = "llm_chat",
               modelName = model.name,
-              systemPrompt = _currentSystemPrompt.value,
+              systemPrompt = systemPromptsByModel[model.name] ?: "",
             )
             conversationIds[model.name] = conv.id
             Log.d(TAG, "Created conversation with ID: ${conv.id}")
@@ -430,7 +437,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
             title = "New Chat",
             taskType = "llm_chat",
             modelName = model.name,
-            systemPrompt = _currentSystemPrompt.value,
+            systemPrompt = systemPromptsByModel[model.name] ?: "",
           ).id.also { conversationIds[model.name] = it }
           
           try {
