@@ -39,6 +39,11 @@ class LlamaCppEngine {
 
     val isModelLoaded = AtomicBoolean(false)
 
+    /** Native projector-reported support, not proof that a specific UI task was tested. */
+    @Volatile
+    var loadedProjectorCapabilities: SmolLM.ProjectorCapabilities? = null
+        private set
+
     @Volatile
     var isGenerating = false
         private set
@@ -62,6 +67,7 @@ class LlamaCppEngine {
         lastLoadParams = params
         lastModelPath = modelPath
         lastSystemPrompt = systemPrompt
+        loadedProjectorCapabilities = null
 
         stateLock.withLock {
             loadJob?.cancel()
@@ -71,6 +77,7 @@ class LlamaCppEngine {
                     instance.load(modelPath, params)
                     params.projectorPath?.let { projectorPath ->
                         val caps = instance.loadProjector(projectorPath)
+                        loadedProjectorCapabilities = caps
                         android.util.Log.i(
                             "BoxOmni",
                             "Projector loaded: audioInput=${caps.audioInput}, imageInput=${caps.imageInput}, audioOutput=${caps.audioOutput}"
@@ -92,6 +99,7 @@ class LlamaCppEngine {
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    loadedProjectorCapabilities = null
                     instance.close()
                     withContext(Dispatchers.Main) {
                         onError(e)
@@ -108,6 +116,7 @@ class LlamaCppEngine {
             loadJob?.cancel()
             isModelLoaded.set(false)
             isGenerating = false
+            loadedProjectorCapabilities = null
             try {
                 instance.close()
             } catch (_: Exception) {}
