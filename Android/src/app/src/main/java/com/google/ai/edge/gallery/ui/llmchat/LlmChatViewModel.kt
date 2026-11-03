@@ -57,6 +57,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -77,6 +78,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
   private val voicePlayback = OmniVoicePlayback()
   private var voicePlaybackJob: Job? = null
   private var activeResponseJob: Job? = null
+  private var activeResponseModel: Model? = null
   private val requestEpoch = AtomicLong(0L)
 
   fun configureVoiceOutput(context: Context) {
@@ -382,8 +384,14 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     val accelerator = model.getStringConfigValue(key = ConfigKeys.ACCELERATOR, defaultValue = "")
     val epoch = requestEpoch.incrementAndGet()
     activeResponseJob?.cancel()
+    // The inference engine owns its own coroutine and JNI mutex. Cancelling
+    // this ViewModel job alone does not interrupt the old native decoder.
+    activeResponseModel?.let { previous ->
+      previous.runtimeHelper.stopResponse(previous)
+    }
     voicePlaybackJob?.cancel()
     voicePlayback.stop()
+    activeResponseModel = model
     activeResponseJob = viewModelScope.launch(Dispatchers.Default) {
       setInProgress(true)
       setPreparing(true)
@@ -644,6 +652,13 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                         setInProgress(false)
                         onDone()
                       }
+                      // withContext(Main) can return normally from its own
+                      // local early return. Recheck the turn epoch here:
+                      // never play speech belonging to an interrupted turn.
+                      if (requestEpoch.get() != epoch ||
+                          !kotlinx.coroutines.currentCoroutineContext().isActive) {
+                        return@launch
+                      }
                       voicePlayback.play(audio)
                     } catch (e: CancellationException) {
                       throw e
@@ -726,6 +741,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     activeResponseJob?.cancel()
     voicePlaybackJob?.cancel()
     voicePlayback.stop()
+    activeResponseModel = null
     Log.d(TAG, "Stopping response for model ${model.name}...")
     if (getLastMessage(model = model) is ChatMessageLoading) {
       removeLastMessage(model = model)
