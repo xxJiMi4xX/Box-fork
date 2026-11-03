@@ -96,6 +96,7 @@ class LlamaCppEngine {
     fun unloadModel() {
         stateLock.withLock {
             generationJob?.cancel()
+            instance.interruptGeneration()
             loadJob?.cancel()
             isModelLoaded.set(false)
             isGenerating = false
@@ -119,6 +120,7 @@ class LlamaCppEngine {
     ) {
         stateLock.withLock {
             generationJob?.cancel()
+            instance.interruptGeneration()
             isGenerating = false
 
             CoroutineScope(Dispatchers.Default).launch {
@@ -254,11 +256,12 @@ class LlamaCppEngine {
             cleaned = cleaned.replace(Regex("<.*$", RegexOption.IGNORE_CASE), "")
         }
 
-        return cleaned.trim()
+        return if (isFinal) cleaned.trim() else cleaned
     }
 
     fun stopGeneration() {
         stateLock.withLock {
+            instance.interruptGeneration()
             generationJob?.cancel()
             isGenerating = false
         }
