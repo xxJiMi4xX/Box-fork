@@ -135,7 +135,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
         }
         if (gguf) {
           val rows = if (convId != null) chatRepository.getMessagesSync(convId) else emptyList()
-          restoreGgufHistory(model, prompt, rows.map { it.role to it.content })
+          restoreGgufHistory(model, prompt, rows.map { it.role to it.content }, historyGate!!)
         }
       } catch (cancelled: CancellationException) {
         throw cancelled
@@ -221,6 +221,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     model: Model,
     prompt: String,
     history: List<Pair<String, String>>,
+    gate: CompletableDeferred<Unit>,
   ) {
     val engine = withTimeout(60_000L) {
       while (true) {
@@ -246,7 +247,11 @@ open class LlmChatViewModelBase() : ChatViewModel() {
       }
     }
     val window = paired.takeLast(200)
-    engine.restoreConversation(prompt, window)
+    if (historyGates[model.name] !== gate) return
+    val restored = engine.restoreConversation(prompt, window) {
+      historyGates[model.name] === gate
+    }
+    if (restored != window.size) return
     if (window.size != history.size) {
       reportVoiceError(
         model,
