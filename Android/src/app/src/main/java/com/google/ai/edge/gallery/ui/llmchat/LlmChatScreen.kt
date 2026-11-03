@@ -321,7 +321,8 @@ fun ChatViewWrapper(
             context = context, task = task, model = model, force = true
           )
         }
-        if (GgufAudioFiles.findProjector(context, model.getPath(context)) != null) {
+        if ((model.instance as? com.google.ai.edge.gallery.engine.LlamaCppEngine)
+            ?.supportsGreekVoice == true) {
           OmniLiveVoicePanel(
             model = model,
             viewModel = viewModel,

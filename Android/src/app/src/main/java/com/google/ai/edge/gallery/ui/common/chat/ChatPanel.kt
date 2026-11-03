@@ -96,7 +96,7 @@ import com.google.ai.edge.gallery.R
 import com.google.ai.edge.gallery.data.BuiltInTaskId
 import com.google.ai.edge.gallery.data.Model
 import com.google.ai.edge.gallery.data.Task
-import com.google.ai.edge.gallery.engine.GgufAudioFiles
+import com.google.ai.edge.gallery.engine.LlamaCppEngine
 import com.google.ai.edge.gallery.ui.common.AudioAnimation
 import com.google.ai.edge.gallery.ui.common.ErrorDialog
 import com.google.ai.edge.gallery.ui.common.FloatingBanner
@@ -134,7 +134,7 @@ fun ChatPanel(
 ) {
   val context = LocalContext.current
   val supportsGgufVoice = task.id == BuiltInTaskId.LLM_CHAT &&
-    GgufAudioFiles.findProjector(context, selectedModel.getPath(context)) != null
+    (selectedModel.instance as? LlamaCppEngine)?.supportsGreekVoice == true
   val uiState by viewModel.uiState.collectAsState()
   val modelManagerUiState by modelManagerViewModel.uiState.collectAsState()
   val messages = uiState.messagesByModel[selectedModel.name] ?: listOf()

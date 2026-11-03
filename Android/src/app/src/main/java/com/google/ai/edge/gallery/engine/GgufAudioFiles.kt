@@ -25,22 +25,37 @@ object GgufAudioFiles {
         return File(context.filesDir, "gguf-projectors/$key/mmproj.gguf")
     }
 
+    private fun validProjector(file: File): Boolean {
+        if (!file.isFile || file.length() < 32 || file.length() > 4L * 1024 * 1024 * 1024) {
+            return false
+        }
+        return runCatching {
+            val magic = ByteArray(4)
+            file.inputStream().use { it.read(magic) == 4 &&
+                magic.contentEquals(byteArrayOf(71, 71, 85, 70)) }
+        }.getOrDefault(false)
+    }
+
     fun findProjector(context: Context, modelPath: String): String? {
         if (!isGguf(modelPath)) return null
         val internal = internalFile(context, modelPath)
-        if (internal.isFile && internal.length() > 0) return internal.absolutePath
+        if (validProjector(internal)) return internal.absolutePath
 
+        // Never select an unrelated mmproj simply because it is the only file
+        // in the directory. Quantization suffixes may legitimately differ.
         val model = File(modelPath)
         val directory = model.parentFile ?: return null
         val exact = File(directory, "mmproj-${model.name}")
-        if (exact.isFile && exact.length() > 0) return exact.absolutePath
+        if (validProjector(exact)) return exact.absolutePath
 
-        val projectors = directory.listFiles { file ->
-            file.isFile && file.length() > 0 &&
-                file.name.startsWith("mmproj", ignoreCase = true) &&
-                file.name.endsWith(".gguf", ignoreCase = true)
+        val isOmni = model.name.contains("LFM3-Omni-2B", ignoreCase = true)
+        if (!isOmni) return null
+        val family = directory.listFiles { file ->
+            file.name.startsWith("mmproj-LFM3-Omni-2B-", ignoreCase = true) &&
+                file.name.endsWith(".gguf", ignoreCase = true) &&
+                validProjector(file)
         } ?: emptyArray()
-        return projectors.singleOrNull()?.absolutePath
+        return family.singleOrNull()?.absolutePath
     }
 
     /** Imports the sidecar through Android's document provider to app-private storage. */
