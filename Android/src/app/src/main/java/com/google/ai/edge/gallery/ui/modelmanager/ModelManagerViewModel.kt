@@ -476,7 +476,7 @@ constructor(
       Log.d(TAG, "Cleaning up model '${model.name}'...")
       val oldInstance = model.instance
       val onDoneFn: () -> Unit = {
-        if (model.instance === oldInstance && !model.initializing) {
+        if ((model.instance === oldInstance || model.instance == null) && !model.initializing) {
           model.instance = null
           model.initializing = false
           updateModelInitializationStatus(

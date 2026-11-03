@@ -111,6 +111,8 @@ object LlamaCppModelHelper : LlmModelHelper {
 
     override fun cleanUp(model: Model, onDone: () -> Unit) {
         val engine = engines.remove(model.name)
+        // Block new turns immediately while the native resources drain.
+        model.instance = null
         if (engine == null) {
             onDone()
             return
