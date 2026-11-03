@@ -120,44 +120,62 @@ fun ChatView(
 
   val context = LocalContext.current
 
-  // Load conversation history: use explicit conversationId if provided, else auto-resume
-  // the most recent conversation for this model (only when autoResumeConversation is true).
+  // Display and native GGUF context must agree. An explicit conversation ID
+  // is checked against the currently selected model before replay.
   LaunchedEffect(conversationId, selectedModel.name) {
     val llmViewModel = viewModel as? com.google.ai.edge.gallery.ui.llmchat.LlmChatViewModelBase
       ?: return@LaunchedEffect
-    val existingMessages = llmViewModel.uiState.value.messagesByModel[selectedModel.name]
-    if (!existingMessages.isNullOrEmpty()) return@LaunchedEffect  // already loaded for this model
+    llmViewModel.setCurrentConversationModel(selectedModel.name)
+    llmViewModel.beginHistorySynchronization(selectedModel)
+    var failure: String? = null
+    try {
+      val convId = conversationId ?: if (autoResumeConversation) {
+        llmViewModel.getLatestConversationForModel(selectedModel.name)?.id
+      } else null
 
-    val convId = if (conversationId != null) {
-      conversationId
-    } else if (autoResumeConversation) {
-      llmViewModel.getLatestConversationForModel(selectedModel.name)?.id
-    } else {
-      null
-    }
-
-    if (convId != null) {
-      Log.d(TAG, "Loading conversation history for: $convId (model=${selectedModel.name})")
-      val messages = llmViewModel.loadConversationHistory(convId)
-      Log.d(TAG, "Loaded ${messages?.size ?: 0} messages")
-      messages?.forEach { message ->
-        llmViewModel.addMessage(
-          selectedModel,
-          ChatMessageText(
-            content = message.content,
-            side = if (message.role == "user") ChatSide.USER else ChatSide.AGENT,
-            latencyMs = message.latencyMs.toFloat(),
-          ),
-        )
+      if (convId == null) {
+        llmViewModel.beginNewConversation(selectedModel)
+        llmViewModel.setCurrentSystemPrompt("")
+      } else {
+        val conversation = llmViewModel.getConversationById(convId)
+          ?: throw IllegalStateException("Αυτή η συνομιλία δεν υπάρχει πλέον")
+        check(conversation.modelName == selectedModel.name) {
+          "Η συνομιλία ανήκει σε διαφορετικό μοντέλο"
+        }
+        val rows = llmViewModel.loadConversationHistory(convId)
+          ?: throw IllegalStateException("Αποτυχία ανάγνωσης αποθηκευμένου ιστορικού")
+        if (llmViewModel.uiState.value.messagesByModel[selectedModel.name].isNullOrEmpty()) {
+          rows.forEach { message ->
+            if (message.role == "user" || message.role == "assistant") {
+              llmViewModel.addMessage(
+                selectedModel,
+                ChatMessageText(
+                  content = message.content,
+                  side = if (message.role == "user") ChatSide.USER else ChatSide.AGENT,
+                  latencyMs = message.latencyMs.toFloat(),
+                ),
+              )
+            }
+          }
+        }
+        llmViewModel.setCurrentConversationId(selectedModel, convId)
+        llmViewModel.setCurrentSystemPrompt(conversation.systemPrompt)
+        if (task.id == BuiltInTaskId.LLM_CHAT &&
+            com.google.ai.edge.gallery.engine.GgufAudioFiles.isGguf(selectedModel.getPath(context))) {
+          llmViewModel.restoreGgufHistory(
+            model = selectedModel,
+            prompt = conversation.systemPrompt,
+            history = rows.map { it.role to it.content },
+          )
+        }
       }
-      llmViewModel.setCurrentConversationId(convId)
-      // Load the system prompt for this conversation so the config dialog shows it.
-      val conv = llmViewModel.getConversationById(convId)
-      if (conv?.systemPrompt?.isNotEmpty() == true) {
-        llmViewModel.setCurrentSystemPrompt(conv.systemPrompt)
-      }
-    } else {
-      Log.d(TAG, "No existing conversation for model ${selectedModel.name}, starting fresh")
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+      throw cancelled
+    } catch (error: Exception) {
+      Log.e(TAG, "Unable to synchronize persisted conversation", error)
+      failure = error.message ?: "Άγνωστο σφάλμα ιστορικού"
+    } finally {
+      llmViewModel.endHistorySynchronization(selectedModel, failure)
     }
   }
 
