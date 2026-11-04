@@ -244,7 +244,10 @@ class OmniLiveVoiceController(private val context: Context) {
                     }
                     if (silence >= END_SILENCE_FRAMES || total >= MAX_UTTERANCE_FRAMES) {
                         val speechWindowMs = (SystemClock.elapsedRealtimeNanos() - speechStartedNs) / 1_000_000L
-                        Log.i("BoxVoiceLatency", "stage=vad_utterance_end elapsedMs=$speechWindowMs trailingSilenceMs=${silence * FRAME_MS} frames=$total")
+                        val vadEndNs = SystemClock.elapsedRealtimeNanos()
+                        Log.i("BoxVoiceLatency",
+                            "stage=vad_utterance_end event_ns=$vadEndNs " +
+                            "elapsedMs=$speechWindowMs trailingSilenceMs=${silence * FRAME_MS} frames=$total")
                         if (voiced >= MIN_UTTERANCE_FRAMES &&
                             speech.size() <= MAX_UTTERANCE_FRAMES * FRAME_BYTES + PRE_ROLL_FRAMES * FRAME_BYTES) {
                             val bytes = speech.toByteArray()

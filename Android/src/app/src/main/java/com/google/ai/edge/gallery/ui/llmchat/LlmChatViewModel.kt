@@ -86,9 +86,11 @@ private class VoiceLatencyTrace private constructor(
   private val startedNs = SystemClock.elapsedRealtimeNanos()
 
   fun mark(stage: String) {
-    val elapsedMs = (SystemClock.elapsedRealtimeNanos() - startedNs) / 1_000_000L
+    val eventNs = SystemClock.elapsedRealtimeNanos()
+    val elapsedMs = (eventNs - startedNs) / 1_000_000L
     onStage(turnId, stage, elapsedMs)
-    Log.i("BoxVoiceLatency", "turn=$turnId stage=$stage elapsedMs=$elapsedMs")
+    Log.i("BoxVoiceLatency",
+      "turn=$turnId stage=$stage event_ns=$eventNs elapsedMs=$elapsedMs")
   }
 
   companion object {
