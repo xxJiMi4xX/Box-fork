@@ -306,6 +306,10 @@ fun OmniVoiceScreen(
                                     "Φόρτωση / επαναφόρτωση μοντέλου…"
                                 currentSessionState == LlamaCppEngine.SessionState.UNLOADING ||
                                     unloading -> "Αποδέσμευση μοντέλου…"
+                                diagnostics.turnId > 0L &&
+                                    diagnostics.stagesMs.containsKey("mixed_first_pcm_played") &&
+                                    !diagnostics.stagesMs.containsKey("voice_completed") ->
+                                    "Αναπαράγεται ελληνική φωνή…"
                                 currentSessionState == LlamaCppEngine.SessionState.LISTENING ->
                                     "Ακούω / αναγνώριση ομιλίας…"
                                 currentSessionState == LlamaCppEngine.SessionState.GENERATING ->
@@ -315,14 +319,6 @@ fun OmniVoiceScreen(
                                 currentSessionState == LlamaCppEngine.SessionState.INTERRUPTING ->
                                     "Ακύρωση προηγούμενου γύρου…"
                                 !modelLoaded -> "Μοντέλο μη φορτωμένο"
-                                engine?.sessionState == LlamaCppEngine.SessionState.LISTENING ->
-                                    "Αναγνώριση ελληνικής ομιλίας"
-                                engine?.sessionState == LlamaCppEngine.SessionState.GENERATING ->
-                                    "Παραγωγή απάντησης"
-                                engine?.sessionState == LlamaCppEngine.SessionState.SPEAKING ->
-                                    "Παραγωγή και αναπαραγωγή ήχου"
-                                engine?.sessionState == LlamaCppEngine.SessionState.INTERRUPTING ->
-                                    "Διακοπή προηγούμενου γύρου"
                                 engine?.lastLoadParams?.numGpuLayers == 0 -> "CPU • Έτοιμο"
                                 else -> "Vulkan ζητήθηκε • offload μη επιβεβαιωμένο"
                             },
