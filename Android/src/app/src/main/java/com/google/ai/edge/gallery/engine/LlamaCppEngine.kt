@@ -20,6 +20,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.channels.ReceiveChannel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.CompletableDeferred
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -59,7 +63,41 @@ class LlamaCppEngine {
         }
     }
 
+    // Every native operation carries its real caller's coroutine context,
+    // making queued work cancelable when that caller is interrupted.
+    private enum class NativeCommand {
+        LOAD, UNLOAD, CLEAR, APPEND_TEXT, APPEND_AUDIO,
+        ASR, TTS, GENERATE, INSPECT, CANCEL
+    }
+
+    private data class NativeQueuedCommand<T>(
+        val type: NativeCommand,
+        val callerContext: CoroutineContext,
+        val reply: CompletableDeferred<T>,
+        val operation: suspend () -> T,
+    )
+
     companion object {
+        // Exactly one process-wide FIFO owner for every GGUF JNI operation.
+        // Native requestStop()/capture-channel cancellation deliberately bypass
+        // this queue: CANCEL must interrupt long-running decode immediately.
+        private val mailbox = Channel<NativeQueuedCommand<*>>(capacity = 64)
+        private val mailboxScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        private val mailboxOwner = mailboxScope.launch {
+            for (pending in mailbox) {
+                @Suppress("UNCHECKED_CAST")
+                val request = pending as NativeQueuedCommand<Any?>
+                if (!request.reply.isActive) continue
+                try {
+                    val result = withContext(request.callerContext) {
+                        request.operation()
+                    }
+                    request.reply.complete(result)
+                } catch (error: Throwable) {
+                    request.reply.completeExceptionally(error)
+                }
+            }
+        }
         // Releasing a large GGUF must complete before loading the next one,
         // even when old/new engines are different instances.
         private val latestTeardown = AtomicReference<Job?>(null)
@@ -76,6 +114,21 @@ class LlamaCppEngine {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val nativeMutex = Mutex()
     private val sessionMutex = Mutex()
+
+    private suspend fun <T> executeSessionCommand(
+        type: NativeCommand,
+        operation: suspend () -> T,
+    ): T {
+        val reply = CompletableDeferred<T>(coroutineContext[Job])
+        val request = NativeQueuedCommand(
+            type = type,
+            callerContext = coroutineContext,
+            reply = reply,
+            operation = suspend { sessionMutex.withLock { operation() } },
+        )
+        mailbox.send(request)
+        return reply.await()
+    }
     // Closing a capture channel is nonblocking and releases a session owner
     // waiting for another AudioRecord frame before model unload/reset.
     private val activeMicrophoneFrames =
@@ -171,7 +224,7 @@ class LlamaCppEngine {
                         ". Restart Box Voice before attempting another load."
                 }
                 globalModelMutex.withLock {
-                  sessionMutex.withLock {
+                  executeSessionCommand(NativeCommand.LOAD) {
                   nativeMutex.withLock {
                     val previous = instance
                     try {
@@ -247,7 +300,7 @@ class LlamaCppEngine {
                 activeGeneration?.join()
                 preceding?.join()
                 globalModelMutex.withLock {
-                    sessionMutex.withLock {
+                    executeSessionCommand(NativeCommand.UNLOAD) {
                     nativeMutex.withLock {
                         val previous = instance
                         previous.close()
@@ -307,7 +360,7 @@ class LlamaCppEngine {
         try {
             runBlocking(Dispatchers.IO) {
                 activeGeneration?.join()
-                sessionMutex.withLock {
+                executeSessionCommand(NativeCommand.CLEAR) {
                 nativeMutex.withLock {
                     check(isModelLoaded.get() && !isUnloading && lifecycleEpoch.get() == loadedEpoch) {
                         "The GGUF model changed during conversation reset"
@@ -342,7 +395,7 @@ class LlamaCppEngine {
         stopGeneration()
         val current = generationJob
         current?.join()
-        sessionMutex.withLock {
+        executeSessionCommand(NativeCommand.APPEND_TEXT) {
         nativeMutex.withLock {
             if (!stillCurrent()) return@withLock 0
             check(isModelLoaded.get() && !isUnloading && epoch == lifecycleEpoch.get()) {
@@ -366,7 +419,7 @@ class LlamaCppEngine {
 
     suspend fun transcribeWav(wav: ByteArray): String = withContext(Dispatchers.IO) {
         require(wav.isNotEmpty()) { "No recorded audio was supplied" }
-        sessionMutex.withLock {
+        executeSessionCommand(NativeCommand.ASR) {
         nativeMutex.withLock {
             check(isModelLoaded.get() && !isUnloading) { "GGUF model unavailable or unloading" }
             isVoiceBusy = true
@@ -387,7 +440,7 @@ class LlamaCppEngine {
 
     suspend fun synthesizeSpeech(text: String): ByteArray = withContext(Dispatchers.IO) {
         require(text.isNotBlank())
-        sessionMutex.withLock {
+        executeSessionCommand(NativeCommand.TTS) {
         nativeMutex.withLock {
             check(isModelLoaded.get() && !isUnloading) { "GGUF model unavailable or unloading" }
             isVoiceBusy = true
@@ -418,7 +471,7 @@ class LlamaCppEngine {
         stopGeneration()
         val epoch = generationEpoch.incrementAndGet()
         return withContext(Dispatchers.IO) {
-            sessionMutex.withLock {
+            executeSessionCommand(NativeCommand.GENERATE) {
                 check(isModelLoaded.get() && !isUnloading && generationEpoch.get() == epoch) {
                     "Mixed generation superseded or model unloaded"
                 }
@@ -486,7 +539,7 @@ class LlamaCppEngine {
         sourceRate: Int,
     ): Boolean = withContext(Dispatchers.IO) {
         require(sourceRate in 8000..192000)
-        sessionMutex.withLock liveSession@{
+        executeSessionCommand(NativeCommand.APPEND_AUDIO) liveSession@{
             if (!isModelLoaded.get() || isUnloading || !supportsGreekVoice) {
                 frames.cancel()
                 return@liveSession false
@@ -553,7 +606,7 @@ class LlamaCppEngine {
 
     /** Inspect pending native audio after independent Greek transcription. */
     suspend fun hasPreparedLiveAudio(): Boolean = withContext(Dispatchers.IO) {
-        sessionMutex.withLock {
+        executeSessionCommand(NativeCommand.INSPECT) {
             nativeMutex.withLock {
                 isModelLoaded.get() && !isUnloading &&
                     instance.hasCommittedRealtimeAudio()
@@ -567,7 +620,7 @@ class LlamaCppEngine {
      * hybrid prefix and replay durable Room pairs when next needed.
      */
     suspend fun discardLiveAudio() = withContext(Dispatchers.IO) {
-        sessionMutex.withLock {
+        executeSessionCommand(NativeCommand.CANCEL) {
             nativeMutex.withLock {
                 if (isModelLoaded.get() && !isUnloading) {
                     instance.abortRealtimeAudio()
@@ -584,7 +637,7 @@ class LlamaCppEngine {
      *  it is never synthesized from model responses or invented.
      */
     suspend fun supportsRealtimeAudioInput(): Boolean = withContext(Dispatchers.IO) {
-        sessionMutex.withLock {
+        executeSessionCommand(NativeCommand.INSPECT) {
             nativeMutex.withLock {
                 isModelLoaded.get() && !isUnloading &&
                     supportsGreekVoice && instance.supportsRealtimeAudio()
@@ -607,7 +660,7 @@ class LlamaCppEngine {
         val epoch = generationEpoch.incrementAndGet()
         generationJob = scope.launch {
             try {
-                val result = sessionMutex.withLock {
+                val result = executeSessionCommand(NativeCommand.GENERATE) {
                     try {
                     nativeMutex.withLock {
                     check(isModelLoaded.get() && !isUnloading && generationEpoch.get() == epoch) {
