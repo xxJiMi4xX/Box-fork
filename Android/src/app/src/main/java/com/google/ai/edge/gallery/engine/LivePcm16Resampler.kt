@@ -41,7 +41,10 @@ internal class LivePcm16Resampler(
         fun at(position: Long): Float =
             if (position == start - 1) lastSample
             else samples[(position - start).toInt()]
-        while (true) {
+        // The nominal output duration must match complete-buffer
+        // conversion even if frame boundaries are irregular.
+        val nominalOutputs = max(1L, end * targetRate / sourceRate)
+        while (outputCount < nominalOutputs) {
             val numerator = outputCount * sourceRate.toLong()
             val left = numerator / targetRate
             val right = left + 1

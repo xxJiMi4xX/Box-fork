@@ -27,6 +27,32 @@ class LivePcm16ResamplerTest {
         }
     }
 
+    @Test fun irregularSampleBoundariesDoNotChangeOutput() {
+        val input = pcm(960)
+        for (sourceRate in listOf(8_000, 16_000, 48_000)) {
+            for (targetRate in listOf(8_000, 16_000, 24_000, 48_000)) {
+                val whole = LivePcm16Resampler(sourceRate, targetRate)
+                val reference = whole.append(input).toList() + whole.finish().toList()
+                val cut = LivePcm16Resampler(sourceRate, targetRate)
+                val parts = listOf(3, 5, 13, 31, 107, 211, 590)
+                var previous = 0
+                val actual = mutableListOf<Float>()
+                for (next in parts) {
+                    if (next <= previous) continue
+                    actual.addAll(cut.append(
+                        input.copyOfRange(previous * 2, next * 2)).toList())
+                    previous = next
+                }
+                actual.addAll(cut.append(input.copyOfRange(previous * 2, input.size)).toList())
+                actual.addAll(cut.finish().toList())
+                assertEquals(reference.size, actual.size)
+                reference.zip(actual).forEach { (a, b) ->
+                    assertEquals(a, b, 0.00001f)
+                }
+            }
+        }
+    }
+
     @Test fun sourceDurationAndAmplitudeArePreserved() {
         val r = LivePcm16Resampler(16_000, 24_000)
         val steady = ByteArray(640) { idx ->
