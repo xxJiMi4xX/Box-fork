@@ -188,7 +188,8 @@ class ChatMessageAudioClip(
     val header = ByteArray(44)
 
     val pcmDataSize = audioData.size
-    val wavFileSize = pcmDataSize + 44 // 44 bytes for the header
+    // RIFF chunk size excludes the 8-byte RIFF descriptor; total file is 44 + PCM.
+    val wavFileSize = pcmDataSize + 36
     val channels = 1 // Mono
     val bitsPerSample: Short = 16
     val byteRate = sampleRate * channels * bitsPerSample / 8
