@@ -84,11 +84,29 @@ void LLMInference::loadModel(const char *path, float minP, float temperature, fl
         ggml_backend_load_all();
     });
     llama_model_params mp = llama_model_default_params();
-    // Only enable GPU layers when a real Vulkan device is visible.
-    // A negative layer count is llama.cpp's supported "all layers" mode.
-    if (nGpuLayers != 0 &&
-        ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU) == nullptr) {
-        throw std::runtime_error("Vulkan GPU device unavailable; select CPU mode");
+    // Mobile Vulkan backends may declare IGPU rather than discrete GPU.
+    // Pin a single explicitly enumerated device; never silently offload to CPU.
+    requestedGpuLayers_ = nGpuLayers;
+    selectedGpuDevice_.clear();
+    requestedGpuDevices_.fill(nullptr);
+    if (nGpuLayers != 0) {
+        ggml_backend_dev_t selected = nullptr;
+        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+            auto dev = ggml_backend_dev_get(i);
+            const auto type = ggml_backend_dev_type(dev);
+            if (type == GGML_BACKEND_DEVICE_TYPE_GPU ||
+                type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+                selected = dev;
+                break;
+            }
+        }
+        if (!selected) {
+            throw std::runtime_error(
+                "No Vulkan GPU/IGPU backend detected; CPU mode remains available");
+        }
+        requestedGpuDevices_[0] = selected;
+        mp.devices = requestedGpuDevices_.data();
+        selectedGpuDevice_ = ggml_backend_dev_name(selected);
     }
     mp.n_gpu_layers = nGpuLayers;
     mp.load_mode = useMmap
@@ -208,8 +226,16 @@ std::string LLMInference::getHardwareInfo() {
         << " FP16=" << ggml_cpu_has_fp16_va()
         << " SVE=" << ggml_cpu_has_sve()
         << " SVE_BYTES=" << ggml_cpu_get_sve_cnt();
-    ggml_backend_dev_t gpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
-    out << " GPU=" << (gpu ? ggml_backend_dev_name(gpu) : "unavailable");
+    out << " selected_backend=" << (requestedGpuLayers_ == 0 ? "CPU" : "Vulkan");
+    out << " requested_gpu_layers=" << requestedGpuLayers_;
+    out << " selected_gpu=" << (selectedGpuDevice_.empty() ? "none" : selectedGpuDevice_);
+    out << " actual_offloaded_layers=unverified";
+    out << " devices=";
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        auto dev = ggml_backend_dev_get(i);
+        if (i) out << ',';
+        out << ggml_backend_dev_name(dev) << ':' << static_cast<int>(ggml_backend_dev_type(dev));
+    }
     return out.str();
 }
 

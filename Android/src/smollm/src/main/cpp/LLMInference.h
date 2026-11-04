@@ -10,6 +10,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <array>
 
 struct mtmd_helper_gen_audio;
 
@@ -71,6 +72,10 @@ private:
     bool storeChats_ = true;
     bool isLfm3_ = false;
     bool generating_ = false;
+    // Stable storage: llama_model_params::devices may be retained by llama.cpp.
+    std::array<ggml_backend_dev_t, 2> requestedGpuDevices_{};
+    std::string selectedGpuDevice_;
+    int requestedGpuLayers_ = 0;
     int contextUsed_ = 0;
     int responseTokens_ = 0;
     int64_t responseTimeUs_ = 0;

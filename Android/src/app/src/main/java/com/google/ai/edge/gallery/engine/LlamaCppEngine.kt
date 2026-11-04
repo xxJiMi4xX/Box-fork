@@ -75,6 +75,10 @@ class LlamaCppEngine {
         private set
     @Volatile var supportsGreekVoice = false
         private set
+    @Volatile var isUnloading = false
+        private set
+    @Volatile var lastLifecycleError: String? = null
+        private set
 
     data class GenerationResult(
         val response: String,
@@ -99,6 +103,7 @@ class LlamaCppEngine {
         loadJob?.cancel()
         val epoch = lifecycleEpoch.incrementAndGet()
         traceMemory("load_requested", epoch)
+        lastLifecycleError = null
         isModelLoaded.set(false)
         supportsGreekVoice = false
         hardwareInfo = ""
@@ -106,6 +111,7 @@ class LlamaCppEngine {
         loadJob = scope.launch {
             try {
                 pendingTeardown?.join()
+                isUnloading = false
                 globalModelMutex.withLock {
                   nativeMutex.withLock {
                     val previous = instance
@@ -144,6 +150,7 @@ class LlamaCppEngine {
                 withContext(Dispatchers.Main) {
                     if (lifecycleEpoch.get() == epoch) {
                         isModelLoaded.set(false)
+                        lastLifecycleError = error.message ?: error.javaClass.simpleName
                         onError(error)
                     }
                 }
@@ -156,15 +163,17 @@ class LlamaCppEngine {
         loadJob?.cancel()
         val epoch = lifecycleEpoch.incrementAndGet()
         traceMemory("unload_requested", epoch)
-        isModelLoaded.set(false)
-        supportsGreekVoice = false
+        isUnloading = true
+        lastLifecycleError = null
         // Do not capture instance before the cancelled load job exits:
         // it may still be constructing a *different* SmolLM handle.
         val loading = loadJob
+        val activeGeneration = generationJob
         val preceding = latestTeardown.get()
         val teardown = scope.launch(Dispatchers.IO) {
             try {
                 loading?.join()
+                activeGeneration?.join()
                 preceding?.join()
                 globalModelMutex.withLock {
                     nativeMutex.withLock {
@@ -173,9 +182,21 @@ class LlamaCppEngine {
                         if (instance === previous) instance = SmolLM()
                     }
                 }
+                if (lifecycleEpoch.get() == epoch) {
+                    isModelLoaded.set(false)
+                    supportsGreekVoice = false
+                    hardwareInfo = ""
+                    traceMemory("unload_native_released", epoch)
+                }
+            } catch (error: Exception) {
+                lastLifecycleError = error.message ?: error.javaClass.simpleName
+                Log.e("BoxVoiceNative", "Native unload failed", error)
             } finally {
                 traceMemory("unload_teardown_settled", epoch)
-                withContext(NonCancellable + Dispatchers.Main) { onDone() }
+                withContext(NonCancellable + Dispatchers.Main) {
+                    if (lifecycleEpoch.get() == epoch) isUnloading = false
+                    onDone()
+                }
             }
         }
         latestTeardown.set(teardown)
@@ -209,7 +230,7 @@ class LlamaCppEngine {
             runBlocking(Dispatchers.IO) {
                 activeGeneration?.join()
                 nativeMutex.withLock {
-                    check(isModelLoaded.get() && lifecycleEpoch.get() == loadedEpoch) {
+                    check(isModelLoaded.get() && !isUnloading && lifecycleEpoch.get() == loadedEpoch) {
                         "The GGUF model changed during conversation reset"
                     }
                     instance.resetConversation(systemPrompt)
@@ -242,7 +263,7 @@ class LlamaCppEngine {
         current?.join()
         nativeMutex.withLock {
             if (!stillCurrent()) return@withLock 0
-            check(isModelLoaded.get() && epoch == lifecycleEpoch.get()) {
+            check(isModelLoaded.get() && !isUnloading && epoch == lifecycleEpoch.get()) {
                 "Model changed before saved history could be restored"
             }
             val model = instance
@@ -260,7 +281,7 @@ class LlamaCppEngine {
     suspend fun transcribeWav(wav: ByteArray): String = withContext(Dispatchers.IO) {
         require(wav.isNotEmpty()) { "No recorded audio was supplied" }
         nativeMutex.withLock {
-            check(isModelLoaded.get()) { "GGUF model is not loaded" }
+            check(isModelLoaded.get() && !isUnloading) { "GGUF model unavailable or unloading" }
             isVoiceBusy = true
             try {
                 val rate = instance.audioSampleRate()
@@ -277,7 +298,7 @@ class LlamaCppEngine {
     suspend fun synthesizeSpeech(text: String): ByteArray = withContext(Dispatchers.IO) {
         require(text.isNotBlank())
         nativeMutex.withLock {
-            check(isModelLoaded.get()) { "GGUF model is not loaded" }
+            check(isModelLoaded.get() && !isUnloading) { "GGUF model unavailable or unloading" }
             isVoiceBusy = true
             try {
                 instance.synthesizeSpeech(text)
@@ -296,14 +317,14 @@ class LlamaCppEngine {
         query: String,
         onChunk: suspend (SmolLM.MixedVoiceStep) -> Unit,
     ): GenerationResult {
-        check(isModelLoaded.get() && supportsGreekVoice) {
+        check(isModelLoaded.get() && !isUnloading && supportsGreekVoice) {
             "Mixed LFM3 speech requires a loaded voice-capable GGUF"
         }
         stopGeneration()
         val epoch = generationEpoch.incrementAndGet()
         return withContext(Dispatchers.IO) {
             nativeMutex.withLock {
-                check(isModelLoaded.get() && generationEpoch.get() == epoch) {
+                check(isModelLoaded.get() && !isUnloading && generationEpoch.get() == epoch) {
                     "Mixed generation superseded or model unloaded"
                 }
                 currentCoroutineContext().ensureActive()
@@ -341,7 +362,7 @@ class LlamaCppEngine {
         onCancelled: () -> Unit,
         onError: (Exception) -> Unit,
     ) {
-        if (!isModelLoaded.get()) {
+        if (!isModelLoaded.get() || isUnloading) {
             onError(IllegalStateException("Model not loaded"))
             return
         }
@@ -350,7 +371,7 @@ class LlamaCppEngine {
         generationJob = scope.launch {
             try {
                 val result = nativeMutex.withLock {
-                    check(isModelLoaded.get() && generationEpoch.get() == epoch) {
+                    check(isModelLoaded.get() && !isUnloading && generationEpoch.get() == epoch) {
                         "Model was unloaded or this response was superseded"
                     }
                     currentCoroutineContext().ensureActive()
@@ -425,5 +446,5 @@ class LlamaCppEngine {
         } else "Model not loaded"
     }
 
-    fun isReady(): Boolean = isModelLoaded.get() && !isGenerating && !isVoiceBusy
+    fun isReady(): Boolean = isModelLoaded.get() && !isUnloading && !isGenerating && !isVoiceBusy
 }
