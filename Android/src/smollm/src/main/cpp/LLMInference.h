@@ -51,6 +51,7 @@ public:
     void startMixedCompletion(const char *query);
     MixedStep mixedCompletionLoop();
     bool supportsRealtimeAudio();
+    bool hasCommittedRealtimeAudio();
     void beginRealtimeAudio();
     void appendRealtimeAudio(const std::vector<float> &pcm);
     void commitRealtimeAudio();

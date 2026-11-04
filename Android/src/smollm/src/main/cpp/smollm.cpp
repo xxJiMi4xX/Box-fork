@@ -213,6 +213,16 @@ Java_com_jegly_offlineLLM_smollm_SmolLM_nativeRealtimeAudioSupported(
     return supported;
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_jegly_offlineLLM_smollm_SmolLM_nativeHasCommittedRealtimeAudio(
+    JNIEnv *env, jobject, jlong id) {
+    jboolean committed = JNI_FALSE;
+    checked(env, [&] {
+        committed = getInstance(id)->hasCommittedRealtimeAudio() ? JNI_TRUE : JNI_FALSE;
+    });
+    return committed;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_jegly_offlineLLM_smollm_SmolLM_nativeBeginRealtimeAudio(
     JNIEnv *env, jobject, jlong id) {

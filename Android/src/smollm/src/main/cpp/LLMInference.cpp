@@ -530,6 +530,11 @@ bool LLMInference::supportsRealtimeAudio() {
         !realtimeAudioCommitted_;
 }
 
+bool LLMInference::hasCommittedRealtimeAudio() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return realtimeAudioCommitted_ && !realtimeInput_ && !generating_;
+}
+
 void LLMInference::beginRealtimeAudio() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!mmproj_ || !isLfm3_ || !mtmd_support_audio_stream(mmproj_))
@@ -611,13 +616,21 @@ void LLMInference::commitRealtimeAudio() {
 }
 
 void LLMInference::abortRealtimeAudio() {
-    // If decoding partially appended embeddings, recover via a full prefill.
     std::lock_guard<std::mutex> lock(mutex_);
+    const bool pending = realtimeInput_ || realtimeAudioCommitted_;
     if (realtimeInput_) mtmd_audio_stream_free(realtimeInput_);
     realtimeInput_ = nullptr;
     realtimeInputSamples_ = 0;
     realtimeAudioCommitted_ = false;
-    chatPrefixValid_ = false;
+    if (pending) {
+        // Recurrent LFM3 states are not arbitrarily rollback-safe. The
+        // durable Room conversation will be re-prefilled on the next turn.
+        llama_memory_clear(llama_get_memory(context_), false);
+        contextUsed_ = 0;
+        chatPrefixValid_ = false;
+        decodedChatPrefix_.clear();
+        llama_sampler_reset(sampler_);
+    }
 }
 
 void LLMInference::startRealtimeMixedCompletion(const char *transcript) {
@@ -855,8 +868,9 @@ std::string LLMInference::transcribeAudio(const std::vector<float> &pcm) {
     stopRequested_.store(false);
     llama_context *const audioWork = getAudioContextLocked();
     if (audioWork == context_) {
-        // ASR/TTS on the shared context destroys its decoded text state.
-        // Rebuild from authoritative messages on the next generation.
+        // Shared-context ASR/TTS overwrites any staged audio prefix.
+        // Do not try to generate from nonexistent recurrent state.
+        realtimeAudioCommitted_ = false;
         chatPrefixValid_ = false;
         decodedChatPrefix_.clear();
         contextUsed_ = 0;
@@ -939,8 +953,9 @@ std::vector<uint8_t> LLMInference::synthesizeSpeech(const std::string &text) {
     stopRequested_.store(false);
     llama_context *const audioWork = getAudioContextLocked();
     if (audioWork == context_) {
-        // ASR/TTS on the shared context destroys its decoded text state.
-        // Rebuild from authoritative messages on the next generation.
+        // Shared-context ASR/TTS overwrites any staged audio prefix.
+        // Do not try to generate from nonexistent recurrent state.
+        realtimeAudioCommitted_ = false;
         chatPrefixValid_ = false;
         decodedChatPrefix_.clear();
         contextUsed_ = 0;
