@@ -27,6 +27,8 @@ class OmniVoicePlayback {
         val activePlayers = AtomicInteger(0)
         val privateOutputRouted = AtomicBoolean(false)
         private val targetPrebufferMs = AtomicInteger(VoiceAudioBufferPolicy.INITIAL_PREBUFFER_MS)
+        val lastStreamUnderruns = AtomicInteger(-1)
+        val lastStreamPrebufferMs = AtomicInteger(-1)
 
         private fun privateDevice(device: AudioDeviceInfo?): Boolean =
             when (device?.type) {
@@ -196,6 +198,8 @@ class OmniVoicePlayback {
                 }
             }
             val underruns = player.underrunCount
+            lastStreamUnderruns.set(underruns)
+            lastStreamPrebufferMs.set(prebufferMs)
             targetPrebufferMs.updateAndGet { current ->
                 VoiceAudioBufferPolicy.adaptPrebuffer(current, underruns)
             }

@@ -92,6 +92,7 @@ fun OmniVoiceScreen(
     val context = LocalContext.current
     val manager by modelManagerViewModel.uiState.collectAsState()
     val chatUi by viewModel.uiState.collectAsState()
+    val diagnostics by viewModel.voiceTurnDiagnostics.collectAsState()
     val task = modelManagerViewModel.getTaskById(BuiltInTaskId.LLM_CHAT)
     val models = task?.models.orEmpty().filter { model ->
         GgufAudioFiles.isGguf(model.getPath(context))
@@ -516,6 +517,34 @@ fun OmniVoiceScreen(
                     if (engine?.lastLifecycleError != null) {
                         Text("Σφάλμα lifecycle: " + engine.lastLifecycleError,
                             color = MaterialTheme.colorScheme.error)
+                    }
+                    if (diagnostics.turnId > 0L) {
+                        Text("Διαγνωστικά τελευταίου φωνητικού γύρου",
+                            style = MaterialTheme.typography.labelLarge)
+                        listOf(
+                            "asr_completed" to "ASR",
+                            "text_first_token" to "Πρώτο κείμενο",
+                            "mixed_first_pcm_ready" to "Πρώτο PCM",
+                            "mixed_first_pcm_played" to "Πρώτη αναπαραγωγή",
+                        ).forEach { (key, title) ->
+                            diagnostics.stagesMs[key]?.let { ms ->
+                                Text("$title: $ms ms από αρχή γύρου",
+                                    style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                        diagnostics.audioRtf?.let { rtf ->
+                            Text("Παραγωγή ήχου / πραγματικό χρόνο: " +
+                                "%.2f".format(java.util.Locale.US, rtf) + "×",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                        diagnostics.underruns?.takeIf { it >= 0 }?.let { underruns ->
+                            Text("Underruns AudioTrack: $underruns",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                        diagnostics.prebufferMs?.takeIf { it >= 0 }?.let { ms ->
+                            Text("Αρχικό PCM buffer: $ms ms",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                     }
                 }

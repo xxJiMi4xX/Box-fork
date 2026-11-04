@@ -32,6 +32,7 @@ import com.google.ai.edge.gallery.data.Task
 import com.google.ai.edge.gallery.data.local.ChatRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.asStateFlow
 import com.google.ai.edge.gallery.runtime.runtimeHelper
 import com.google.ai.edge.gallery.security.SecurityUtils
@@ -69,18 +70,31 @@ import kotlinx.coroutines.sync.withLock
 
 private const val TAG = "AGLlmChatViewModel"
 
-/** Logcat-only, monotonic latency timeline. Never logs recognized speech or prompts. */
-private class VoiceLatencyTrace private constructor(private val turnId: Long) {
+data class VoiceTurnDiagnostics(
+  val turnId: Long = 0L,
+  val stagesMs: Map<String, Long> = emptyMap(),
+  val audioRtf: Double? = null,
+  val underruns: Int? = null,
+  val prebufferMs: Int? = null,
+)
+
+/** Monotonic latency timeline. Never logs recognized speech or prompts. */
+private class VoiceLatencyTrace private constructor(
+  private val turnId: Long,
+  private val onStage: (Long, String, Long) -> Unit,
+) {
   private val startedNs = SystemClock.elapsedRealtimeNanos()
 
   fun mark(stage: String) {
     val elapsedMs = (SystemClock.elapsedRealtimeNanos() - startedNs) / 1_000_000L
+    onStage(turnId, stage, elapsedMs)
     Log.i("BoxVoiceLatency", "turn=$turnId stage=$stage elapsedMs=$elapsedMs")
   }
 
   companion object {
     private val nextId = AtomicLong(0L)
-    fun begin(): VoiceLatencyTrace = VoiceLatencyTrace(nextId.incrementAndGet())
+    fun begin(onStage: (Long, String, Long) -> Unit): VoiceLatencyTrace =
+      VoiceLatencyTrace(nextId.incrementAndGet(), onStage)
   }
 }
 
@@ -100,6 +114,9 @@ open class LlmChatViewModelBase() : ChatViewModel() {
   private val historyGates = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
   private val historyErrors = ConcurrentHashMap<String, String>()
   private val voicePlayback = OmniVoicePlayback()
+  private val _voiceTurnDiagnostics = MutableStateFlow(VoiceTurnDiagnostics())
+  val voiceTurnDiagnostics: StateFlow<VoiceTurnDiagnostics> =
+    _voiceTurnDiagnostics.asStateFlow()
   private var voicePlaybackJob: Job? = null
   private var activeResponseJob: Job? = null
   private var activeResponseModel: Model? = null
@@ -465,7 +482,17 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     useNativeRealtimeAudio: Boolean = false,
   ) {
     val voiceTrace = if (audioMessages.isNotEmpty() && model.instance is LlamaCppEngine) {
-      VoiceLatencyTrace.begin().also { it.mark("turn_requested") }
+      VoiceLatencyTrace.begin { turnId, stage, elapsedMs ->
+        _voiceTurnDiagnostics.update { previous ->
+          if (stage == "turn_requested") {
+            VoiceTurnDiagnostics(turnId, mapOf(stage to elapsedMs))
+          } else if (previous.turnId == turnId) {
+            previous.copy(stagesMs = previous.stagesMs + (stage to elapsedMs))
+          } else {
+            previous
+          }
+        }
+      }.also { it.mark("turn_requested") }
     } else null
     val accelerator = model.getStringConfigValue(key = ConfigKeys.ACCELERATOR, defaultValue = "")
     val epoch = requestEpoch.incrementAndGet()
@@ -946,6 +973,12 @@ open class LlmChatViewModelBase() : ChatViewModel() {
             if (Log.isLoggable("BoxVoiceNative", Log.DEBUG)) {
               val wallNs = (SystemClock.elapsedRealtimeNanos() - mixedStartedNs).coerceAtLeast(1L)
               val generatedMs = if (audioRate > 0) generatedPcmFrames * 1000L / audioRate else 0L
+              if (requestEpoch.get() == epoch) {
+                _voiceTurnDiagnostics.update {
+                  it.copy(audioRtf = if (audioRate > 0)
+                      generatedPcmFrames * 1_000_000_000.0 / audioRate / wallNs else null)
+                }
+              }
               Log.d("BoxVoiceNative", "event=mixed_generation_end epoch=$epoch " +
                   "audio_rate_hz=$audioRate generated_frames=$generatedPcmFrames " +
                   "generated_audio_ms=$generatedMs generation_wall_ms=${wallNs / 1_000_000L} " +
@@ -965,6 +998,14 @@ open class LlmChatViewModelBase() : ChatViewModel() {
             }
             playerJob.join()
             playbackFailure.get()?.let { throw it }
+            if (requestEpoch.get() == epoch) {
+              _voiceTurnDiagnostics.update {
+                it.copy(
+                  underruns = OmniVoicePlayback.lastStreamUnderruns.get(),
+                  prebufferMs = OmniVoicePlayback.lastStreamPrebufferMs.get(),
+                )
+              }
+            }
             withContext(Dispatchers.Main) {
               if (requestEpoch.get() == epoch) {
                 addMessage(
