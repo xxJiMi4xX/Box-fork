@@ -127,6 +127,7 @@ jobs:
             --tests "com.google.ai.edge.gallery.engine.WavPcm16Test" \
             --tests "com.google.ai.edge.gallery.engine.VoiceAudioBufferPolicyTest" \
             --tests "com.google.ai.edge.gallery.engine.LivePcm16ResamplerTest" \
+            --tests "com.google.ai.edge.gallery.engine.NativeSessionMailboxTest" \
             --tests "com.google.ai.edge.gallery.ui.llmchat.GgufConversationPairsTest" \
             --no-daemon --stacktrace --console=plain --max-workers=2
 
