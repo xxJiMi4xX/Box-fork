@@ -855,8 +855,11 @@ std::string LLMInference::transcribeAudio(const std::vector<float> &pcm) {
     stopRequested_.store(false);
     llama_context *const audioWork = getAudioContextLocked();
     if (audioWork == context_) {
+        // ASR/TTS on the shared context destroys its decoded text state.
+        // Rebuild from authoritative messages on the next generation.
         chatPrefixValid_ = false;
         decodedChatPrefix_.clear();
+        contextUsed_ = 0;
     }
 
     // ASR must use the actual LFM3 assistant prefix, not a generic
@@ -936,8 +939,11 @@ std::vector<uint8_t> LLMInference::synthesizeSpeech(const std::string &text) {
     stopRequested_.store(false);
     llama_context *const audioWork = getAudioContextLocked();
     if (audioWork == context_) {
+        // ASR/TTS on the shared context destroys its decoded text state.
+        // Rebuild from authoritative messages on the next generation.
         chatPrefixValid_ = false;
         decodedChatPrefix_.clear();
+        contextUsed_ = 0;
     }
     std::string promptStr =
         "<|startoftext|><|im_start|>system\n"
