@@ -14,12 +14,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Send
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -30,6 +33,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -44,6 +49,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -96,6 +104,8 @@ fun OmniVoiceScreen(
     var selectedName by remember { mutableStateOf<String?>(null) }
     var expanded by remember { mutableStateOf(false) }
     var settingsExpanded by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+    var typedMessage by remember(selectedName) { mutableStateOf("") }
     var gpuMenuExpanded by remember { mutableStateOf(false) }
     var importUri by remember { mutableStateOf<Uri?>(null) }
     var importInfo by remember { mutableStateOf<ImportedModel?>(null) }
@@ -266,7 +276,36 @@ fun OmniVoiceScreen(
                     Text("Εισαγωγή μοντέλου GGUF")
                 }
             } else {
-                Text("Μοντέλο", style = MaterialTheme.typography.labelLarge)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(selected.name, maxLines = 1,
+                            style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            when {
+                                unloading || engine?.isUnloading == true -> "Αποδέσμευση μοντέλου…"
+                                !modelLoaded -> "Μοντέλο μη φορτωμένο"
+                                engine?.lastLoadParams?.numGpuLayers == 0 -> "CPU • Έτοιμο"
+                                else -> "Vulkan ζητήθηκε • offload μη επιβεβαιωμένο"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    IconButton(onClick = { showSettings = true }) {
+                        Icon(Icons.Rounded.Settings, contentDescription = "Ρυθμίσεις μοντέλου")
+                    }
+                }
+                if (showSettings) {
+                ModalBottomSheet(onDismissRequest = { showSettings = false }) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 640.dp)
+                        .verticalScroll(rememberScrollState()).padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                Text("Μοντέλο", style = MaterialTheme.typography.titleMedium)
                 Box {
                     OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
                         Text(selected.name, maxLines = 2)
@@ -435,9 +474,9 @@ fun OmniVoiceScreen(
                     val activeThreads = engine?.lastLoadParams?.numThreads
                     if (modelLoaded && activeThreads != null) {
                         Text(
-                            "Ενεργό backend: " +
+                            "Επιλεγμένο backend: " +
                                 if (engine?.lastLoadParams?.numGpuLayers == 0) "CPU"
-                                else "Vulkan",
+                                else "Vulkan (πραγματικό offload υπό έλεγχο)",
                             style = MaterialTheme.typography.bodySmall,
                         )
                         Text(
@@ -463,6 +502,10 @@ fun OmniVoiceScreen(
                     }
                     if (runtimeError != null) {
                         Text(runtimeError!!, color = MaterialTheme.colorScheme.error)
+                    }
+                    if (engine?.lastLifecycleError != null) {
+                        Text("Σφάλμα lifecycle: " + engine.lastLifecycleError,
+                            color = MaterialTheme.colorScheme.error)
                     }
                     }
                 }
@@ -584,6 +627,9 @@ fun OmniVoiceScreen(
                     ) { Text("Επανέλεγχος φόρτωσης μοντέλου") }
                 }
 
+                }
+                }
+                }
                 if (hasFullAudio) {
                     OmniLiveVoicePanel(
                         model = selected,
@@ -598,7 +644,6 @@ fun OmniVoiceScreen(
                     )
                 }
 
-                Text("Συνομιλία", style = MaterialTheme.typography.titleMedium)
                 val allMessages = chatUi.messagesByModel[selected.name].orEmpty()
                 val visible = allMessages.filter {
                     it is ChatMessageText || it is ChatMessageError ||
@@ -608,20 +653,62 @@ fun OmniVoiceScreen(
                 LaunchedEffect(selected.name, visible.size) {
                     if (visible.isNotEmpty()) scroll.animateScrollToItem(visible.lastIndex)
                 }
-                if (visible.isEmpty()) {
-                    Text(
-                        "Όταν ξεκινήσει η φωνητική συνομιλία, οι αναγνωρισμένες φράσεις και οι απαντήσεις θα εμφανιστούν εδώ.",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                } else {
-                    LazyColumn(
-                        state = scroll,
-                        modifier = Modifier.fillMaxWidth().weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(visible) { message ->
-                            VoiceMessageCard(message)
+                LazyColumn(
+                    state = scroll,
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (visible.isEmpty()) {
+                        item {
+                            Text(
+                                "Οι ελληνικές φράσεις και οι απαντήσεις θα εμφανίζονται εδώ.",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
                         }
+                    }
+                    items(visible) { message -> VoiceMessageCard(message) }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = androidx.compose.ui.Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = typedMessage,
+                        onValueChange = { typedMessage = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("Γράψε μήνυμα…") },
+                        maxLines = 3,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(onSend = {
+                            val message = typedMessage.trim()
+                            if (message.isNotEmpty() && modelLoaded && !unloading) {
+                                typedMessage = ""
+                                viewModel.addMessage(selected,
+                                    ChatMessageText(content = message, side = ChatSide.USER))
+                                viewModel.generateResponse(
+                                    model = selected, input = message,
+                                    onError = { viewModel.reportVoiceError(selected, it) },
+                                )
+                            }
+                        }),
+                    )
+                    IconButton(
+                        enabled = typedMessage.isNotBlank() && modelLoaded && !unloading,
+                        onClick = {
+                            val message = typedMessage.trim()
+                            if (message.isNotEmpty()) {
+                                typedMessage = ""
+                                viewModel.addMessage(selected,
+                                    ChatMessageText(content = message, side = ChatSide.USER))
+                                viewModel.generateResponse(
+                                    model = selected, input = message,
+                                    onError = { viewModel.reportVoiceError(selected, it) },
+                                )
+                            }
+                        },
+                    ) {
+                        Icon(Icons.Rounded.Send, contentDescription = "Αποστολή μηνύματος")
                     }
                 }
             }
