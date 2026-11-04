@@ -5,6 +5,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -39,6 +41,52 @@ class NativeSessionMailboxTest {
             load.await()
             generate.await()
             assertEquals(listOf("load-begin", "load-end", "generate"), order)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test fun activeCancellationReleasesTheNextNativeCommand() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val entered = CompletableDeferred<Unit>()
+            val finallyExited = CompletableDeferred<Unit>()
+            val mailbox = NativeSessionMailbox(scope)
+            val first = async {
+                mailbox.submit(NativeVoiceCommand.APPEND_AUDIO) {
+                    try {
+                        entered.complete(Unit)
+                        awaitCancellation()
+                    } finally {
+                        finallyExited.complete(Unit)
+                    }
+                }
+            }
+            withTimeout(3_000) { entered.await() }
+            first.cancel()
+            withTimeout(3_000) { first.join() }
+            withTimeout(3_000) { finallyExited.await() }
+            val answer = withTimeout(3_000) {
+                mailbox.submit(NativeVoiceCommand.GENERATE) { 42 }
+            }
+            assertEquals(42, answer)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test fun oneFailedNativeCommandDoesNotKillTheOwner() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val mailbox = NativeSessionMailbox(scope)
+            try {
+                mailbox.submit(NativeVoiceCommand.ASR) {
+                    throw IllegalStateException("Expected simulated ASR failure")
+                }
+            } catch (_: IllegalStateException) {
+                // A failed turn must not poison all subsequent commands.
+            }
+            assertEquals(7, mailbox.submit(NativeVoiceCommand.INSPECT) { 7 })
         } finally {
             scope.cancel()
         }
