@@ -62,6 +62,9 @@ class LlamaCppEngine {
         // Releasing a large GGUF must complete before loading the next one,
         // even when old/new engines are different instances.
         private val latestTeardown = AtomicReference<Job?>(null)
+        // A failed JNI close leaves native ownership uncertain. Fail closed:
+        // prohibit a second model allocation in this process.
+        private val fatalTeardownFailure = AtomicReference<String?>(null)
         // Loading and unloading model weights share process-wide llama.cpp
         // backend state; serialize ownership transitions across instances.
         private val globalModelMutex = Mutex()
@@ -155,11 +158,21 @@ class LlamaCppEngine {
             try {
                 pendingTeardown?.join()
                 isUnloading = false
+                check(fatalTeardownFailure.get() == null) {
+                    "Previous native GGUF teardown failed: " +
+                        fatalTeardownFailure.get() +
+                        ". Restart Box Voice before attempting another load."
+                }
                 globalModelMutex.withLock {
                   sessionMutex.withLock {
                   nativeMutex.withLock {
                     val previous = instance
-                    previous.close()
+                    try {
+                        previous.close()
+                    } catch (error: Exception) {
+                        fatalTeardownFailure.set(error.message ?: error.javaClass.simpleName)
+                        throw error
+                    }
                     val next = SmolLM()
                     instance = next
                     try {
@@ -243,8 +256,9 @@ class LlamaCppEngine {
                 }
             } catch (error: Exception) {
                 lastLifecycleError = error.message ?: error.javaClass.simpleName
+                fatalTeardownFailure.set(lastLifecycleError)
                 publishState(SessionState.ERROR)
-                Log.e("BoxVoiceNative", "Native unload failed", error)
+                Log.e("BoxVoiceNative", "Native unload failed; restart required", error)
             } finally {
                 traceMemory("unload_teardown_settled", epoch)
                 withContext(NonCancellable + Dispatchers.Main) {
