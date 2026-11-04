@@ -73,6 +73,7 @@ import com.google.ai.edge.gallery.ui.modelmanager.ModelManagerViewModel
 import com.google.ai.edge.gallery.ui.modelmanager.ModelImportDialog
 import com.google.ai.edge.gallery.ui.modelmanager.ModelImportingDialog
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -176,9 +177,13 @@ fun OmniVoiceScreen(
     val status = selected?.let { manager.modelInitializationStatus[it.name] }
     val isInitialized = status?.status == ModelInitializationStatusType.INITIALIZED
     val engine = selected?.instance as? LlamaCppEngine
+    val sessionFlow = remember(engine) {
+        engine?.sessionStatus ?: MutableStateFlow(LlamaCppEngine.SessionState.UNLOADED)
+    }
+    val currentSessionState by sessionFlow.collectAsState()
     val modelLoaded = isInitialized && engine?.isModelLoaded?.get() == true &&
-        engine.sessionState != LlamaCppEngine.SessionState.ERROR &&
-        engine.sessionState != LlamaCppEngine.SessionState.UNLOADING
+        currentSessionState != LlamaCppEngine.SessionState.ERROR &&
+        currentSessionState != LlamaCppEngine.SessionState.UNLOADING
     val hasFullAudio = modelLoaded && engine?.supportsGreekVoice == true
     val projector = selected?.let {
         GgufAudioFiles.findProjector(context, it.getPath(context))
@@ -295,11 +300,20 @@ fun OmniVoiceScreen(
                             style = MaterialTheme.typography.titleSmall)
                         Text(
                             when {
-                                engine?.sessionState == LlamaCppEngine.SessionState.ERROR ->
+                                currentSessionState == LlamaCppEngine.SessionState.ERROR ->
                                     "Σφάλμα: " + engine?.lastLifecycleError.orEmpty()
-                                engine?.sessionState == LlamaCppEngine.SessionState.LOADING ->
+                                currentSessionState == LlamaCppEngine.SessionState.LOADING ->
                                     "Φόρτωση / επαναφόρτωση μοντέλου…"
-                                unloading || engine?.isUnloading == true -> "Αποδέσμευση μοντέλου…"
+                                currentSessionState == LlamaCppEngine.SessionState.UNLOADING ||
+                                    unloading -> "Αποδέσμευση μοντέλου…"
+                                currentSessionState == LlamaCppEngine.SessionState.LISTENING ->
+                                    "Ακούω / αναγνώριση ομιλίας…"
+                                currentSessionState == LlamaCppEngine.SessionState.GENERATING ->
+                                    "Παράγω απάντηση…"
+                                currentSessionState == LlamaCppEngine.SessionState.SPEAKING ->
+                                    "Παράγω φωνή…"
+                                currentSessionState == LlamaCppEngine.SessionState.INTERRUPTING ->
+                                    "Ακύρωση προηγούμενου γύρου…"
                                 !modelLoaded -> "Μοντέλο μη φορτωμένο"
                                 engine?.sessionState == LlamaCppEngine.SessionState.LISTENING ->
                                     "Αναγνώριση ελληνικής ομιλίας"
