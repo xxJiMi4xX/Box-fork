@@ -597,12 +597,13 @@ fun OmniVoiceScreen(
                         },
                     ) {
                         Text(if (useNativeRealtimeAudio)
-                            "Incremental audio: πειραματικό ON"
-                            else "Incremental audio: OFF")
+                            "Incremental audio encode: ON (δοκιμαστικό)"
+                            else "Incremental audio encode: OFF")
                     }
                     Text(
-                        "Απαιτεί υποστήριξη mtmd_audio_stream από το mmproj. " +
-                            "Αν απουσιάζει, παραμένει ενεργή η παλιά μικτή διαδρομή.",
+                        "Επεξεργάζεται τον καταγεγραμμένο ήχο σε κομμάτια 40 ms " +
+                            "μετά την αναγνώριση ομιλίας, όχι ακόμη κατά την ηχογράφηση. " +
+                            "Απαιτεί mtmd_audio_stream· αλλιώς χρησιμοποιείται η παλιά διαδρομή.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
