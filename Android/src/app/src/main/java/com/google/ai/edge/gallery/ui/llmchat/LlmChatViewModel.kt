@@ -647,6 +647,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     voicePlayback.stop()
     activeResponseModel = model
     activeResponseJob = viewModelScope.launch(Dispatchers.Default) {
+      try {
       setInProgress(true)
       setPreparing(true)
 
@@ -1257,6 +1258,14 @@ open class LlmChatViewModelBase() : ChatViewModel() {
           }
           synchronized(liveCaptureLock) { previousLiveCleanup = cleanup }
         }
+      }
+      } finally {
+        // Includes early returns from initialization/history/ASR gates,
+        // before the inner turn-generation try/finally is entered.
+        val stillClaimed = synchronized(liveCaptureLock) {
+          claimedLiveCapture === stagedVoiceTurn && stagedVoiceTurn != null
+        }
+        if (stillClaimed) abortLiveAudioCapture(model)
       }
     }
   }
