@@ -135,6 +135,39 @@ class SmolLM {
         val done: Boolean,
     )
 
+    fun supportsRealtimeAudio(): Boolean {
+        verifyHandle()
+        return nativeRealtimeAudioSupported(nativePtr)
+    }
+
+    fun beginRealtimeAudio() {
+        verifyHandle()
+        nativeBeginRealtimeAudio(nativePtr)
+    }
+
+    fun appendRealtimeAudio(pcm: FloatArray) {
+        verifyHandle()
+        require(pcm.isNotEmpty())
+        nativeAppendRealtimeAudio(nativePtr, pcm)
+    }
+
+    fun commitRealtimeAudio() {
+        verifyHandle()
+        nativeCommitRealtimeAudio(nativePtr)
+    }
+
+    fun abortRealtimeAudio() {
+        if (nativePtr != 0L) nativeAbortRealtimeAudio(nativePtr)
+    }
+
+    fun beginRealtimeMixedResponse(transcript: String): Long {
+        verifyHandle()
+        require(transcript.isNotBlank())
+        val handle = nativePtr
+        nativeStartRealtimeMixedCompletion(handle, transcript)
+        return handle
+    }
+
     // Only called by the exclusive LlamaCppEngine session owner.
     fun beginMixedResponse(query: String): Long {
         verifyHandle()
@@ -240,6 +273,12 @@ class SmolLM {
     private external fun getContextSizeUsed(modelPtr: Long): Int
     private external fun close(modelPtr: Long)
     private external fun startCompletion(modelPtr: Long, prompt: String)
+    private external fun nativeRealtimeAudioSupported(modelPtr: Long): Boolean
+    private external fun nativeBeginRealtimeAudio(modelPtr: Long)
+    private external fun nativeAppendRealtimeAudio(modelPtr: Long, pcm: FloatArray)
+    private external fun nativeCommitRealtimeAudio(modelPtr: Long)
+    private external fun nativeAbortRealtimeAudio(modelPtr: Long)
+    private external fun nativeStartRealtimeMixedCompletion(modelPtr: Long, transcript: String)
     private external fun nativeStartMixedCompletion(modelPtr: Long, prompt: String)
     private external fun nativeMixedCompletionLoop(modelPtr: Long): MixedVoiceStep
     private external fun completionLoop(modelPtr: Long): String?

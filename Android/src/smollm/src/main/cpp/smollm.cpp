@@ -203,6 +203,58 @@ Java_com_jegly_offlineLLM_smollm_SmolLM_completionLoop(
     return result;
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_jegly_offlineLLM_smollm_SmolLM_nativeRealtimeAudioSupported(
+    JNIEnv *env, jobject, jlong id) {
+    jboolean supported = JNI_FALSE;
+    checked(env, [&] {
+        supported = getInstance(id)->supportsRealtimeAudio() ? JNI_TRUE : JNI_FALSE;
+    });
+    return supported;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_jegly_offlineLLM_smollm_SmolLM_nativeBeginRealtimeAudio(
+    JNIEnv *env, jobject, jlong id) {
+    checked(env, [&] { getInstance(id)->beginRealtimeAudio(); });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_jegly_offlineLLM_smollm_SmolLM_nativeAppendRealtimeAudio(
+    JNIEnv *env, jobject, jlong id, jfloatArray samples) {
+    checked(env, [&] {
+        if (!samples) throw std::invalid_argument("Realtime PCM is missing");
+        const jsize count = env->GetArrayLength(samples);
+        if (count <= 0 || count > 192000 * 2)
+            throw std::invalid_argument("Realtime PCM chunk is invalid");
+        std::vector<float> data(static_cast<size_t>(count));
+        env->GetFloatArrayRegion(samples, 0, count, data.data());
+        if (env->ExceptionCheck()) return;
+        getInstance(id)->appendRealtimeAudio(data);
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_jegly_offlineLLM_smollm_SmolLM_nativeCommitRealtimeAudio(
+    JNIEnv *env, jobject, jlong id) {
+    checked(env, [&] { getInstance(id)->commitRealtimeAudio(); });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_jegly_offlineLLM_smollm_SmolLM_nativeAbortRealtimeAudio(
+    JNIEnv *env, jobject, jlong id) {
+    checked(env, [&] { getInstance(id)->abortRealtimeAudio(); });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_jegly_offlineLLM_smollm_SmolLM_nativeStartRealtimeMixedCompletion(
+    JNIEnv *env, jobject, jlong id, jstring transcript) {
+    checked(env, [&] {
+        const std::string phrase = utf(env, transcript);
+        getInstance(id)->startRealtimeMixedCompletion(phrase.c_str());
+    });
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_jegly_offlineLLM_smollm_SmolLM_nativeStartMixedCompletion(
     JNIEnv *env, jobject, jlong id, jstring prompt) {
