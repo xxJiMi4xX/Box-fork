@@ -37,6 +37,19 @@ class LlamaCppEngine {
     private val stateRef = AtomicReference(SessionState.UNLOADED)
     val sessionState: SessionState get() = stateRef.get()
 
+    private fun markReadyAfterWorker() {
+        // An older worker must never overwrite a newer LOADING / UNLOADING
+        // or ERROR state after cancellation.
+        while (!isUnloading) {
+            val current = stateRef.get()
+            if (current != SessionState.GENERATING &&
+                current != SessionState.SPEAKING &&
+                current != SessionState.INTERRUPTING &&
+                current != SessionState.LISTENING) return
+            if (stateRef.compareAndSet(current, SessionState.READY)) return
+        }
+    }
+
     companion object {
         // Releasing a large GGUF must complete before loading the next one,
         // even when old/new engines are different instances.
@@ -336,7 +349,7 @@ class LlamaCppEngine {
                     .ifEmpty { throw IllegalStateException("No Greek transcription was produced") }
             } finally {
                 isVoiceBusy = false
-                if (!isUnloading) stateRef.set(SessionState.READY)
+                markReadyAfterWorker()
             }
         }
         }
@@ -353,7 +366,7 @@ class LlamaCppEngine {
                 instance.synthesizeSpeech(text)
             } finally {
                 isVoiceBusy = false
-                if (!isUnloading) stateRef.set(SessionState.READY)
+                markReadyAfterWorker()
             }
         }
         }
@@ -417,9 +430,7 @@ class LlamaCppEngine {
                     // The serialized owner is still held. In-flight native
                     // work has now stopped, even for cancelled epochs.
                     isGenerating = false
-                    if (!isUnloading && stateRef.get() != SessionState.ERROR) {
-                        stateRef.set(SessionState.READY)
-                    }
+                    markReadyAfterWorker()
                 }
             }
         }
@@ -518,9 +529,7 @@ class LlamaCppEngine {
                     // The serialized owner is still held. In-flight native
                     // work has now stopped, even for cancelled epochs.
                     isGenerating = false
-                    if (!isUnloading && stateRef.get() != SessionState.ERROR) {
-                        stateRef.set(SessionState.READY)
-                    }
+                    markReadyAfterWorker()
                 }
             }
         }
@@ -575,9 +584,7 @@ class LlamaCppEngine {
                     } finally {
                         // State is released while still owning the session mutex.
                         isGenerating = false
-                        if (!isUnloading && stateRef.get() != SessionState.ERROR) {
-                            stateRef.set(SessionState.READY)
-                        }
+                        markReadyAfterWorker()
                     }
                 }
                 withContext(Dispatchers.Main) {

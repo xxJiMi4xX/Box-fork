@@ -518,7 +518,16 @@ void LLMInference::startMixedCompletion(const char *query) {
 
 bool LLMInference::supportsRealtimeAudio() {
     std::lock_guard<std::mutex> lock(mutex_);
-    return mmproj_ && isLfm3_ && mtmd_support_audio_stream(mmproj_);
+    // The experimental adapter cannot yet prove recurrent sequence continuity
+    // after a previous text/audio response. Route such turns through the
+    // established ASR + mixed path rather than corrupting hybrid state.
+    const bool freshConversation =
+        contextUsed_ == 0 &&
+        (messages_.empty() ||
+         (messages_.size() == 1 && messages_.front().first == "system"));
+    return mmproj_ && isLfm3_ && mtmd_support_audio_stream(mmproj_) &&
+        freshConversation && !generating_ && !realtimeInput_ &&
+        !realtimeAudioCommitted_;
 }
 
 void LLMInference::beginRealtimeAudio() {
@@ -527,6 +536,11 @@ void LLMInference::beginRealtimeAudio() {
         throw std::runtime_error("This LFM3 projector has no streaming audio input");
     if (generating_ || realtimeInput_ || realtimeAudioCommitted_)
         throw std::runtime_error("A realtime audio turn is already open");
+    if (contextUsed_ != 0 ||
+        !(messages_.empty() ||
+          (messages_.size() == 1 && messages_.front().first == "system")))
+        throw std::runtime_error(
+            "Realtime input continuation is not verified for hybrid context; use ASR+mixed fallback");
     stopRequested_.store(false);
     realtimeInput_ = mtmd_audio_stream_init(mmproj_, mtmd_audio_stream_params_default());
     if (!realtimeInput_) throw std::runtime_error("Cannot initialize LFM3 audio stream");
