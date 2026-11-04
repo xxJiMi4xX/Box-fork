@@ -83,7 +83,7 @@ class OmniLiveVoiceController(private val context: Context) {
         // Executed on the capture IO thread; MUST return immediately and
         // MUST NOT call JNI/ASR or wait for a coroutine.
         onSpeechFrame: (ByteArray, Int) -> Unit = { _, _ -> },
-        onSpeechEnd: () -> Unit = {},
+        onSpeechEnd: (accepted: Boolean) -> Unit = {},
         onUtterance: (ByteArray, Int) -> Unit,
         onError: (String) -> Unit,
         onStopped: () -> Unit,
@@ -200,7 +200,7 @@ class OmniLiveVoiceController(private val context: Context) {
                         voiced = 0
                         silence = 0
                         total = 0
-                        if (inSpeech) onSpeechEnd()
+                        if (inSpeech) onSpeechEnd(false)
                         inSpeech = false
                         continue
                     }
@@ -257,9 +257,11 @@ class OmniLiveVoiceController(private val context: Context) {
                         Log.i("BoxVoiceLatency",
                             "stage=vad_utterance_end event_ns=$vadEndNs " +
                             "elapsedMs=$speechWindowMs trailingSilenceMs=${silence * FRAME_MS} frames=$total")
-                        onSpeechEnd()
-                        if (voiced >= MIN_UTTERANCE_FRAMES &&
-                            speech.size() <= MAX_UTTERANCE_FRAMES * FRAME_BYTES + PRE_ROLL_FRAMES * FRAME_BYTES) {
+                        val accepted = voiced >= MIN_UTTERANCE_FRAMES &&
+                            speech.size() <= MAX_UTTERANCE_FRAMES * FRAME_BYTES +
+                                PRE_ROLL_FRAMES * FRAME_BYTES
+                        onSpeechEnd(accepted)
+                        if (accepted) {
                             val bytes = speech.toByteArray()
                             withContext(Dispatchers.Main) { onUtterance(bytes, SAMPLE_RATE) }
                         }
@@ -279,7 +281,7 @@ class OmniLiveVoiceController(private val context: Context) {
                 }
             } finally {
                 // Safe even if VAD has not opened a turn; owner ignores it.
-                runCatching { onSpeechEnd() }
+                runCatching { onSpeechEnd(false) }
                 if (counted) activeMicrophones.decrementAndGet()
                 val finishingJob = currentCoroutineContext()[Job]
                 synchronized(lock) {
