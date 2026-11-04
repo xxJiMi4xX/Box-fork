@@ -56,6 +56,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeout
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.ConcurrentHashMap
@@ -127,6 +128,131 @@ open class LlmChatViewModelBase() : ChatViewModel() {
   fun configureVoiceOutput(context: Context) {
     voicePlayback.configure(context.applicationContext)
   }
+  private class LiveCaptureTurn(
+    val modelName: String,
+    val engine: LlamaCppEngine,
+    val sampleRate: Int,
+  ) {
+    // At most one 24-second VAD utterance plus pre-roll: ~0.8 MB PCM16.
+    val frames = Channel<ByteArray>(
+      capacity = 1216,
+    )
+    val completed = CompletableDeferred<Boolean>()
+    val failed = AtomicBoolean(false)
+    var worker: Job? = null
+  }
+
+  private val liveCaptureLock = Any()
+  private var liveCapture: LiveCaptureTurn? = null
+  private var previousLiveCleanup: Job? = null
+
+  /**
+   * Complete Room reconciliation BEFORE touching the realtime native context.
+   * A restored conversation containing previous turns is currently rejected by
+   * the experimental first-turn native path; normal ASR/mixed remains available.
+   */
+  private suspend fun prepareLiveAudioHistory(
+    model: Model, engine: LlamaCppEngine,
+  ): Boolean {
+    requireHistoryReady(model)
+    lastCommitJob?.join()
+    check(persistenceFailures[model.name] == null) {
+      "The previous GGUF turn was not durably committed"
+    }
+    val id = ensureConversationId(model)
+    val prompt = systemPromptsByModel[model.name] ?: ""
+    if (!engine.isRoomHistoryCurrent(id, prompt)) {
+      val rows = chatRepository.getMessagesSync(id)
+      val window = GgufConversationPairs.completedWindow(
+        rows.map { it.role to it.content })
+      engine.restoreConversation(prompt, window, conversationId = id)
+    }
+    return engine.supportsRealtimeAudioInput()
+  }
+
+  /**
+   * Called on VAD onset (main thread). The native encoder runs on an IO
+   * coroutine and owns the model until COMMIT_AUDIO or abort. AudioRecord
+   * itself is never blocked by these operations.
+   */
+  fun beginLiveAudioCapture(model: Model, sampleRate: Int) {
+    abortLiveAudioCapture(model)
+    val engine = model.instance as? LlamaCppEngine ?: return
+    if (sampleRate !in 8_000..192_000) return
+    val turn = LiveCaptureTurn(model.name, engine, sampleRate)
+    val preceding = synchronized(liveCaptureLock) {
+      liveCapture = turn
+      previousLiveCleanup
+    }
+    turn.worker = viewModelScope.launch(Dispatchers.IO) {
+      var committed = false
+      try {
+        preceding?.join()
+        if (prepareLiveAudioHistory(model, engine)) {
+          committed = engine.encodeLiveMicrophone(turn.frames, sampleRate)
+        }
+      } catch (cancelled: CancellationException) {
+        throw cancelled
+      } catch (error: Exception) {
+        Log.w(TAG, "Live microphone encoder reverted to ASR fallback", error)
+      } finally {
+        turn.frames.cancel()
+        turn.completed.complete(committed && !turn.failed.get())
+        Log.i("BoxVoiceLatency", "stage=live_audio_encoder_done committed=$committed")
+      }
+    }
+  }
+
+  /** Called on AudioRecord IO thread. It NEVER waits for JNI or the model. */
+  fun offerLiveAudioFrame(model: Model, pcm16: ByteArray, sampleRate: Int) {
+    val turn = synchronized(liveCaptureLock) { liveCapture }
+    if (turn == null || turn.modelName != model.name || turn.sampleRate != sampleRate ||
+        turn.failed.get()) return
+    if (!turn.frames.trySend(pcm16).isSuccess) {
+      // A model slower than the capture rate must not silently lose phonemes.
+      turn.failed.set(true)
+      turn.frames.cancel()
+      turn.worker?.cancel()
+      Log.w(TAG, "Live PCM staging overflow: complete WAV ASR fallback required")
+    }
+  }
+
+  /** Called from AudioRecord IO thread at VAD utterance termination. */
+  fun endLiveAudioCapture(model: Model, accepted: Boolean) {
+    val turn = synchronized(liveCaptureLock) {
+      liveCapture?.takeIf { it.modelName == model.name }
+    } ?: return
+    if (accepted && !turn.failed.get()) turn.frames.close()
+    else abortLiveAudioCapture(model)
+  }
+
+  private fun takeLiveAudioCapture(model: Model): LiveCaptureTurn? =
+    synchronized(liveCaptureLock) {
+      val captured = liveCapture?.takeIf { it.modelName == model.name }
+      if (captured != null) liveCapture = null
+      captured
+    }
+
+  fun abortLiveAudioCapture(model: Model) {
+    val turn = synchronized(liveCaptureLock) {
+      val captured = liveCapture?.takeIf { it.modelName == model.name }
+      if (captured != null) liveCapture = null
+      captured
+    } ?: return
+    turn.failed.set(true)
+    turn.frames.cancel()
+    turn.worker?.cancel()
+    val oldCleanup = synchronized(liveCaptureLock) { previousLiveCleanup }
+    val cleanup = viewModelScope.launch(Dispatchers.IO) {
+      oldCleanup?.join()
+      turn.worker?.join()
+      runCatching { turn.engine.discardLiveAudio() }.onFailure {
+        Log.e(TAG, "Native microphone stream cleanup failed", it)
+      }
+    }
+    synchronized(liveCaptureLock) { previousLiveCleanup = cleanup }
+  }
+
 
   /**
    * An ASR, TTS, microphone or audio-focus failure is not evidence that
@@ -497,11 +623,15 @@ open class LlmChatViewModelBase() : ChatViewModel() {
       }.also { it.mark("turn_requested") }
     } else null
     val accelerator = model.getStringConfigValue(key = ConfigKeys.ACCELERATOR, defaultValue = "")
+    val stagedVoiceTurn = if (useMixedVoice && useNativeRealtimeAudio &&
+        audioMessages.isNotEmpty()) takeLiveAudioCapture(model) else null
+    val previousWasActive = activeResponseJob?.isActive == true ||
+        (activeResponseModel?.instance as? LlamaCppEngine)?.isGenerating == true
     val epoch = requestEpoch.incrementAndGet()
     activeResponseJob?.cancel()
-    // The inference engine owns its own coroutine and JNI mutex. Cancelling
-    // this ViewModel job alone does not interrupt the old native decoder.
-    activeResponseModel?.let { previous ->
+    // Do not interrupt a newly committed microphone stream just because the
+    // previous ViewModel job is already finished.
+    if (previousWasActive) activeResponseModel?.let { previous ->
       previous.runtimeHelper.stopResponse(previous)
     }
     voicePlaybackJob?.cancel()
@@ -563,6 +693,12 @@ open class LlmChatViewModelBase() : ChatViewModel() {
       val start = System.currentTimeMillis()
 
       try {
+        // Finish all incremental frames before the independent Greek ASR.
+        // If the model rejected input, keep the complete recorded WAV fallback.
+        val liveInputCommitted = stagedVoiceTurn?.completed?.await() == true
+        if (liveInputCommitted) {
+          voiceTrace?.mark("live_audio_committed")
+        }
         // A GGUF voice turn uses the model's own LFM3 audio encoder for ASR,
         // then the normal chat generation path for context-preserving reasoning.
         // For LiteRT models, retain the existing audioClips route unchanged.
@@ -963,14 +1099,13 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                 }
               }
             }
-            val realtimeWav = recordedVoiceWav
-            if (useNativeRealtimeAudio && realtimeWav != null &&
-                voiceEngine.supportsRealtimeAudioInput()) {
-              voiceEngine.streamRealtimeAudioResponse(
-                realtimeWav, effectiveInput, acceptMixedChunk)
-            } else {
-              voiceEngine.streamMixedResponse(effectiveInput, acceptMixedChunk)
-            }
+            // The live stream was already encoded before VAD ended. Preserve
+            // those acoustic embeddings only if ASR could use an independent
+            // scratch context; otherwise ASR invalidated the native prefix.
+            val prepared = liveInputCommitted && voiceEngine.hasPreparedLiveAudio()
+            voiceEngine.streamMixedResponse(
+              effectiveInput, acceptMixedChunk, preparedAudio = prepared)
+
             audioChannel.close()
             val wallNs = (SystemClock.elapsedRealtimeNanos() - mixedStartedNs).coerceAtLeast(1L)
             val generatedMs = if (audioRate > 0) generatedPcmFrames * 1000L / audioRate else 0L
