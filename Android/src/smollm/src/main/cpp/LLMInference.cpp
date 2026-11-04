@@ -365,6 +365,7 @@ void LLMInference::startCompletion(const char *query) {
         std::equal(decodedChatPrefix_.begin(), decodedChatPrefix_.end(), tokens.begin()) &&
         llama_memory_seq_pos_max(llama_get_memory(context_), 0) + 1 ==
             static_cast<llama_pos>(decodedChatPrefix_.size());
+    const size_t reusedTokens = prefixMatches ? decodedChatPrefix_.size() : 0;
     if (!prefixMatches) {
         llama_memory_clear(llama_get_memory(context_), false);
         decodedChatPrefix_.clear();
@@ -402,7 +403,7 @@ void LLMInference::startCompletion(const char *query) {
     if (__android_log_is_loggable(ANDROID_LOG_DEBUG, "BoxVoiceNative", ANDROID_LOG_SILENT)) {
         __android_log_print(ANDROID_LOG_DEBUG, "BoxVoiceNative",
             "event=chat_prefix_reuse reused_tokens=%zu total_tokens=%zu",
-            prefixMatches ? decodedChatPrefix_.size() : 0UL, tokens.size());
+            reusedTokens, tokens.size());
     }
     beforeGeneration_ = historyBackup;
     generating_ = true;

@@ -54,6 +54,16 @@ class LlamaCppEngine {
             "fd_count=$fds mappings_count=$mappings model_loaded=${isModelLoaded.get()}")
     }
     private val lifecycleEpoch = AtomicLong(0L)
+    @Volatile private var hotRoomConversationId: String? = null
+    @Volatile private var hotRoomModelEpoch: Long = -1L
+    @Volatile private var hotRoomSystemPrompt: String? = null
+
+    fun isRoomHistoryCurrent(conversationId: String, systemPrompt: String): Boolean =
+        isModelLoaded.get() && !isUnloading &&
+            hotRoomModelEpoch == lifecycleEpoch.get() &&
+            hotRoomConversationId == conversationId &&
+            hotRoomSystemPrompt == systemPrompt
+
     private val generationEpoch = AtomicLong(0L)
 
     var lastLoadParams: SmolLM.InferenceParams? = null
@@ -98,6 +108,9 @@ class LlamaCppEngine {
         lastLoadParams = params
         lastModelPath = modelPath
         lastSystemPrompt = systemPrompt
+        hotRoomConversationId = null
+        hotRoomModelEpoch = -1L
+        hotRoomSystemPrompt = null
 
         stopGeneration()
         loadJob?.cancel()
@@ -163,6 +176,8 @@ class LlamaCppEngine {
         loadJob?.cancel()
         val epoch = lifecycleEpoch.incrementAndGet()
         traceMemory("unload_requested", epoch)
+        hotRoomConversationId = null
+        hotRoomModelEpoch = -1L
         isUnloading = true
         lastLifecycleError = null
         // Do not capture instance before the cancelled load job exits:
@@ -224,6 +239,8 @@ class LlamaCppEngine {
             "GGUF conversation reset must be dispatched off the Android main thread"
         }
         val loadedEpoch = lifecycleEpoch.get()
+        hotRoomConversationId = null
+        hotRoomModelEpoch = -1L
         val activeGeneration = generationJob
         stopGeneration()
         try {
@@ -251,6 +268,7 @@ class LlamaCppEngine {
     suspend fun restoreConversation(
         systemPrompt: String,
         conversationHistory: List<Pair<String, String>>,
+        conversationId: String? = null,
         stillCurrent: () -> Boolean = { true },
     ): Int = withContext(Dispatchers.IO) {
         require(conversationHistory.all { (role, _) -> role == "user" || role == "assistant" }) {
@@ -274,6 +292,9 @@ class LlamaCppEngine {
                 model.addChatMessage(role, content)
             }
             lastSystemPrompt = systemPrompt
+            hotRoomConversationId = conversationId
+            hotRoomModelEpoch = epoch
+            hotRoomSystemPrompt = systemPrompt
             conversationHistory.size
         }
     }

@@ -268,7 +268,9 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     }
     val window = paired.takeLast(200)
     if (historyGates[model.name] !== gate) return
-    val restored = engine.restoreConversation(prompt, window) {
+    val restored = engine.restoreConversation(
+      prompt, window, conversationId = conversationIds[model.name],
+    ) {
       historyGates[model.name] === gate
     }
     if (restored != window.size) return
@@ -612,30 +614,37 @@ open class LlmChatViewModelBase() : ChatViewModel() {
             check(failure == null) {
               "Ο προηγούμενος γύρος δεν αποθηκεύτηκε. Απαιτείται επαναφορά: $failure"
             }
-            voiceTrace?.mark("room_read_started")
-            val rows = chatRepository.getMessagesSync(ggufConversationId)
-            voiceTrace?.mark("room_read_completed")
-            val paired = mutableListOf<Pair<String, String>>()
-            var pending: String? = null
-            for (row in rows) {
-              when (row.role) {
-                "user" -> pending = row.content
-                "assistant" -> {
-                  val userText = pending
-                  if (userText != null) {
-                    paired += "user" to userText
-                    paired += "assistant" to row.content
-                    pending = null
+            val ggufEngine = model.instance as LlamaCppEngine
+            val nativePrompt = systemPromptsByModel[model.name] ?: ""
+            if (!ggufEngine.isRoomHistoryCurrent(ggufConversationId, nativePrompt)) {
+              voiceTrace?.mark("room_read_started")
+              val rows = chatRepository.getMessagesSync(ggufConversationId)
+              voiceTrace?.mark("room_read_completed")
+              val paired = mutableListOf<Pair<String, String>>()
+              var pending: String? = null
+              for (row in rows) {
+                when (row.role) {
+                  "user" -> pending = row.content
+                  "assistant" -> {
+                    val userText = pending
+                    if (userText != null) {
+                      paired += "user" to userText
+                      paired += "assistant" to row.content
+                      pending = null
+                    }
                   }
                 }
               }
+              voiceTrace?.mark("history_replay_started")
+              ggufEngine.restoreConversation(
+                nativePrompt, paired.takeLast(200),
+                conversationId = ggufConversationId,
+              )
+              voiceTrace?.mark("history_restored")
+            } else {
+              // Room still owns durable recovery; hot native history is already in sync.
+              voiceTrace?.mark("history_reused_without_room_read")
             }
-            voiceTrace?.mark("history_replay_started")
-            (model.instance as LlamaCppEngine).restoreConversation(
-              systemPromptsByModel[model.name] ?: "",
-              paired.takeLast(200),
-            )
-            voiceTrace?.mark("history_restored")
           } catch (cancelled: CancellationException) {
             throw cancelled
           } catch (error: Exception) {
