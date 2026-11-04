@@ -454,7 +454,15 @@ void LLMInference::finishGeneration(bool commitResponse) {
     generating_ = false;
     pendingUtf8_.clear();
     if (!commitResponse) {
+        // For LFM3 and mixed acoustic rows an arbitrary recurrent-state
+        // rewind is not safe. An incomplete decode must never be advertised
+        // as the next valid hot context. The durable messages remain the
+        // source of truth for the next full prefill.
         chatPrefixValid_ = false;
+        decodedChatPrefix_.clear();
+        if (context_) llama_memory_clear(llama_get_memory(context_), false);
+        contextUsed_ = 0;
+        realtimeAudioCommitted_ = false;
         // Cancelling a turn must not leave a dangling user instruction
         // or a partial assistant response in the next generation.
         messages_ = std::move(beforeGeneration_);

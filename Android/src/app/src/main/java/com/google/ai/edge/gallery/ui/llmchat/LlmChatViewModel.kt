@@ -214,6 +214,9 @@ open class LlmChatViewModelBase() : ChatViewModel() {
       // A model slower than the capture rate must not silently lose phonemes.
       turn.failed.set(true)
       turn.frames.cancel()
+      // Coroutine cancellation alone does not interrupt a blocking JNI
+      // llama_decode. Trigger the native atomic stop flag as well.
+      turn.engine.interruptLiveEncoding()
       turn.worker?.cancel()
       Log.w(TAG, "Live PCM staging overflow: complete WAV ASR fallback required")
     }
