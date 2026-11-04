@@ -30,6 +30,13 @@ import kotlin.time.measureTime
  * LiteRT-LM uses its own independent engine and is unaffected.
  */
 class LlamaCppEngine {
+    enum class SessionState {
+        UNLOADED, LOADING, READY, LISTENING, GENERATING, SPEAKING,
+        INTERRUPTING, UNLOADING, ERROR
+    }
+    private val stateRef = AtomicReference(SessionState.UNLOADED)
+    val sessionState: SessionState get() = stateRef.get()
+
     companion object {
         // Releasing a large GGUF must complete before loading the next one,
         // even when old/new engines are different instances.
@@ -118,6 +125,7 @@ class LlamaCppEngine {
         val epoch = lifecycleEpoch.incrementAndGet()
         traceMemory("load_requested", epoch)
         lastLifecycleError = null
+        stateRef.set(SessionState.LOADING)
         isModelLoaded.set(false)
         supportsGreekVoice = false
         hardwareInfo = ""
@@ -157,6 +165,7 @@ class LlamaCppEngine {
                 withContext(Dispatchers.Main) {
                     if (lifecycleEpoch.get() == epoch) {
                         isModelLoaded.set(true)
+                        stateRef.set(SessionState.READY)
                         onSuccess()
                     }
                 }
@@ -167,6 +176,7 @@ class LlamaCppEngine {
                     if (lifecycleEpoch.get() == epoch) {
                         isModelLoaded.set(false)
                         lastLifecycleError = error.message ?: error.javaClass.simpleName
+                        stateRef.set(SessionState.ERROR)
                         onError(error)
                     }
                 }
@@ -182,6 +192,7 @@ class LlamaCppEngine {
         hotRoomConversationId = null
         hotRoomModelEpoch = -1L
         isUnloading = true
+        stateRef.set(SessionState.UNLOADING)
         lastLifecycleError = null
         // Do not capture instance before the cancelled load job exits:
         // it may still be constructing a *different* SmolLM handle.
@@ -206,10 +217,12 @@ class LlamaCppEngine {
                     isModelLoaded.set(false)
                     supportsGreekVoice = false
                     hardwareInfo = ""
+                    stateRef.set(SessionState.UNLOADED)
                     traceMemory("unload_native_released", epoch)
                 }
             } catch (error: Exception) {
                 lastLifecycleError = error.message ?: error.javaClass.simpleName
+                stateRef.set(SessionState.ERROR)
                 Log.e("BoxVoiceNative", "Native unload failed", error)
             } finally {
                 traceMemory("unload_teardown_settled", epoch)
@@ -314,6 +327,7 @@ class LlamaCppEngine {
         nativeMutex.withLock {
             check(isModelLoaded.get() && !isUnloading) { "GGUF model unavailable or unloading" }
             isVoiceBusy = true
+            stateRef.set(SessionState.LISTENING)
             try {
                 val rate = instance.audioSampleRate()
                 check(rate > 0) { "This GGUF requires an audio-capable mmproj projector" }
@@ -322,6 +336,7 @@ class LlamaCppEngine {
                     .ifEmpty { throw IllegalStateException("No Greek transcription was produced") }
             } finally {
                 isVoiceBusy = false
+                if (!isUnloading) stateRef.set(SessionState.READY)
             }
         }
         }
@@ -333,10 +348,12 @@ class LlamaCppEngine {
         nativeMutex.withLock {
             check(isModelLoaded.get() && !isUnloading) { "GGUF model unavailable or unloading" }
             isVoiceBusy = true
+            stateRef.set(SessionState.GENERATING)
             try {
                 instance.synthesizeSpeech(text)
             } finally {
                 isVoiceBusy = false
+                if (!isUnloading) stateRef.set(SessionState.READY)
             }
         }
         }
@@ -364,6 +381,7 @@ class LlamaCppEngine {
                 val model = instance
                 val handle = nativeMutex.withLock { model.beginMixedResponse(query) }
                 isGenerating = true
+                stateRef.set(SessionState.GENERATING)
                 val full = StringBuilder()
                 try {
                     val duration = measureTime {
@@ -375,6 +393,7 @@ class LlamaCppEngine {
                             val chunk = nativeMutex.withLock { model.nextMixedResponse(handle) }
                             if (chunk.text.isNotEmpty() || chunk.pcm16.isNotEmpty()) {
                                 full.append(chunk.text)
+                                if (chunk.pcm16.isNotEmpty()) stateRef.set(SessionState.SPEAKING)
                                 // Backpressure and Compose callbacks NEVER hold nativeMutex.
                                 onChunk(chunk)
                             }
@@ -395,7 +414,10 @@ class LlamaCppEngine {
                     withContext(NonCancellable) {
                         nativeMutex.withLock { model.endMixedResponse(handle) }
                     }
-                    if (generationEpoch.get() == epoch) isGenerating = false
+                    if (generationEpoch.get() == epoch) {
+                        isGenerating = false
+                        if (!isUnloading) stateRef.set(SessionState.READY)
+                    }
                 }
             }
         }
@@ -448,6 +470,7 @@ class LlamaCppEngine {
                     nativeMutex.withLock { model.commitRealtimeAudio() }
                     handle = nativeMutex.withLock { model.beginRealtimeMixedResponse(transcript) }
                     isGenerating = true
+                    stateRef.set(SessionState.GENERATING)
                     val activeHandle = checkNotNull(handle)
                     val duration = measureTime {
                         while (true) {
@@ -460,6 +483,7 @@ class LlamaCppEngine {
                             }
                             if (chunk.text.isNotEmpty() || chunk.pcm16.isNotEmpty()) {
                                 full.append(chunk.text)
+                                if (chunk.pcm16.isNotEmpty()) stateRef.set(SessionState.SPEAKING)
                                 onChunk(chunk)
                             }
                             if (chunk.done) break
@@ -489,7 +513,10 @@ class LlamaCppEngine {
                             model.abortRealtimeAudio()
                         }
                     }
-                    if (generationEpoch.get() == epoch) isGenerating = false
+                    if (generationEpoch.get() == epoch) {
+                        isGenerating = false
+                        if (!isUnloading) stateRef.set(SessionState.READY)
+                    }
                 }
             }
         }
@@ -517,6 +544,7 @@ class LlamaCppEngine {
                     }
                     currentCoroutineContext().ensureActive()
                     isGenerating = true
+                    stateRef.set(SessionState.GENERATING)
                     val model = instance
                     val full = StringBuilder()
                     var emittedLength = 0
@@ -552,7 +580,10 @@ class LlamaCppEngine {
                     if (generationEpoch.get() == epoch) onError(error)
                 }
             } finally {
-                if (generationEpoch.get() == epoch) isGenerating = false
+                if (generationEpoch.get() == epoch) {
+                    isGenerating = false
+                    if (!isUnloading) stateRef.set(SessionState.READY)
+                }
             }
         }
     }
@@ -575,6 +606,7 @@ class LlamaCppEngine {
 
     fun stopGeneration() {
         if (isGenerating) {
+            if (!isUnloading) stateRef.set(SessionState.INTERRUPTING)
             hotRoomConversationId = null
             hotRoomModelEpoch = -1L
         }

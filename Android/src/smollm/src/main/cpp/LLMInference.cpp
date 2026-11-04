@@ -805,6 +805,9 @@ void LLMInference::resetConversation(const char *systemPrompt) {
 
 llama_context *LLMInference::getAudioContextLocked() {
     if (audioContext_) return audioContext_;
+    // On a fresh conversation there is no chat state worth preserving:
+    // avoid allocating a second large context on the first ASR turn.
+    if (contextUsed_ == 0) return context_;
     llama_context_params cp = llama_context_default_params();
     cp.n_ctx = llama_n_ctx(context_);
     cp.n_batch = llama_n_batch(context_);

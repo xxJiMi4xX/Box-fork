@@ -291,6 +291,8 @@ fun OmniVoiceScreen(
                             style = MaterialTheme.typography.titleSmall)
                         Text(
                             when {
+                                engine?.sessionState == LlamaCppEngine.SessionState.ERROR ->
+                                    "Σφάλμα: " + engine.lastLifecycleError.orEmpty()
                                 unloading || engine?.isUnloading == true -> "Αποδέσμευση μοντέλου…"
                                 !modelLoaded -> "Μοντέλο μη φορτωμένο"
                                 engine?.lastLoadParams?.numGpuLayers == 0 -> "CPU • Έτοιμο"
