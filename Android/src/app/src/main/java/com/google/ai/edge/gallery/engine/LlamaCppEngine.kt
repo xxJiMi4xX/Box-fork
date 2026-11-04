@@ -534,6 +534,34 @@ class LlamaCppEngine {
         }
     }
 
+    /** Inspect pending native audio after independent Greek transcription. */
+    suspend fun hasPreparedLiveAudio(): Boolean = withContext(Dispatchers.IO) {
+        sessionMutex.withLock {
+            nativeMutex.withLock {
+                isModelLoaded.get() && !isUnloading &&
+                    instance.hasCommittedRealtimeAudio()
+            }
+        }
+    }
+
+    /**
+     * Reject a VAD false-positive, interrupted stream or stale committed
+     * utterance. Never perform partial LFM3 seq_rm: clear the incomplete
+     * hybrid prefix and replay durable Room pairs when next needed.
+     */
+    suspend fun discardLiveAudio() = withContext(Dispatchers.IO) {
+        sessionMutex.withLock {
+            nativeMutex.withLock {
+                if (isModelLoaded.get() && !isUnloading) {
+                    instance.abortRealtimeAudio()
+                }
+            }
+            hotRoomConversationId = null
+            hotRoomModelEpoch = -1L
+            hotRoomSystemPrompt = null
+        }
+    }
+
     /** Experimental, opt-in realtime audio route with native incremental encoding.
      *  A real transcript is obtained by the existing Greek ASR before this call;
      *  it is never synthesized from model responses or invented.
