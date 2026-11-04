@@ -64,32 +64,34 @@ object LlamaCppModelHelper : LlmModelHelper {
             mmprojPath = projector,
         )
 
-        fun loadWith(options: SmolLM.InferenceParams, allowGpuFallback: Boolean) {
-            engine.loadModel(
-                modelPath = modelPath,
-                params = options,
-                onSuccess = {
-                    if (engines[model.name] === engine) {
-                        model.instance = engine
-                        onDone("")
+        // 0 means explicitly selected CPU. A nonzero layer count explicitly
+        // requests Vulkan; silently replacing it with CPU defeats the selector
+        // and produces misleading performance measurements.
+        engine.loadModel(
+            modelPath = modelPath,
+            params = params,
+            onSuccess = {
+                if (engines[model.name] === engine) {
+                    model.instance = engine
+                    onDone("")
+                } else {
+                    engine.unloadModel()
+                }
+            },
+            onError = { error ->
+                if (engines[model.name] === engine) {
+                    val detail = error.message ?: "Unknown model initialization error"
+                    val message = if (params.numGpuLayers != 0) {
+                        "Vulkan GPU φόρτωση απέτυχε. " +
+                            "Δεν έγινε αυτόματη αλλαγή σε CPU: $detail"
                     } else {
-                        engine.unloadModel()
+                        detail
                     }
-                },
-                onError = { e ->
-                    if (engines[model.name] === engine) {
-                        if (allowGpuFallback && options.numGpuLayers != 0) {
-                            Log.w(TAG, "Vulkan GGUF load failed; reverting to CPU", e)
-                            loadWith(options.copy(numGpuLayers = 0, gpuProjector = false), false)
-                        } else {
-                            Log.e(TAG, "Failed to load GGUF model", e)
-                            onDone(e.message ?: "Failed to load GGUF model")
-                        }
-                    }
-                },
-            )
-        }
-        loadWith(params, true)
+                    Log.e(TAG, "GGUF backend initialization failed", error)
+                    onDone(message)
+                }
+            },
+        )
     }
 
     override fun resetConversation(
