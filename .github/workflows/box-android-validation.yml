@@ -2,7 +2,7 @@ name: Box Omni Voice debug APK validation
 
 on:
   push:
-    branches: [feature/lfm3-omni-android, feature/lfm3-omni-audio-stage, work/box-voice-phase0-20261104]
+    branches: [feature/lfm3-omni-android, feature/lfm3-omni-audio-stage, work/box-voice-phase0-20261104, work/box-voice-full-implementation-20261104]
     paths:
       - "Android/**"
       - ".gitmodules"
