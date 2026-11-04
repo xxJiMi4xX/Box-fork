@@ -970,19 +970,20 @@ open class LlmChatViewModelBase() : ChatViewModel() {
               voiceEngine.streamMixedResponse(effectiveInput, acceptMixedChunk)
             }
             audioChannel.close()
-            if (Log.isLoggable("BoxVoiceNative", Log.DEBUG)) {
-              val wallNs = (SystemClock.elapsedRealtimeNanos() - mixedStartedNs).coerceAtLeast(1L)
-              val generatedMs = if (audioRate > 0) generatedPcmFrames * 1000L / audioRate else 0L
-              if (requestEpoch.get() == epoch) {
-                _voiceTurnDiagnostics.update {
-                  it.copy(audioRtf = if (audioRate > 0)
-                      generatedPcmFrames * 1_000_000_000.0 / audioRate / wallNs else null)
-                }
+            val wallNs = (SystemClock.elapsedRealtimeNanos() - mixedStartedNs).coerceAtLeast(1L)
+            val generatedMs = if (audioRate > 0) generatedPcmFrames * 1000L / audioRate else 0L
+            val audioRtf = if (audioRate > 0)
+                generatedPcmFrames * 1_000_000_000.0 / audioRate / wallNs else null
+            if (requestEpoch.get() == epoch) {
+              _voiceTurnDiagnostics.update {
+                it.copy(audioRtf = audioRtf)
               }
+            }
+            if (Log.isLoggable("BoxVoiceNative", Log.DEBUG)) {
               Log.d("BoxVoiceNative", "event=mixed_generation_end epoch=$epoch " +
                   "audio_rate_hz=$audioRate generated_frames=$generatedPcmFrames " +
                   "generated_audio_ms=$generatedMs generation_wall_ms=${wallNs / 1_000_000L} " +
-                  "audio_rtf=${if (audioRate > 0) generatedPcmFrames * 1_000_000_000.0 / audioRate / wallNs else 0.0}")
+                  "audio_rtf=${audioRtf ?: 0.0}")
             }
             check(producedText) { "Το LFM3 mixed mode δεν παρήγαγε κείμενο" }
             if (!producedAudio) {
