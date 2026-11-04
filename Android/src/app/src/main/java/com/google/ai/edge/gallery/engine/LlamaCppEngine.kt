@@ -710,9 +710,22 @@ class LlamaCppEngine {
     }
 
     fun benchModel(pp: Int = 512, tg: Int = 128, pl: Int = 1, nr: Int = 3): String {
-        return if (isModelLoaded.get()) {
-            instance.benchModel(pp, tg, pl, nr)
-        } else "Model not loaded"
+        // The benchmark touches the same llama_context as ASR, streaming and
+        // generation. Never bypass the process-wide owner or block Compose.
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return "GGUF benchmark requires a background thread"
+        }
+        return runBlocking(Dispatchers.IO) {
+            executeSessionCommand(NativeVoiceCommand.INSPECT) {
+                nativeMutex.withLock {
+                    if (!isModelLoaded.get() || isUnloading || isGenerating || isVoiceBusy) {
+                        "GGUF model unavailable or busy"
+                    } else {
+                        instance.benchModel(pp, tg, pl, nr)
+                    }
+                }
+            }
+        }
     }
 
     fun isReady(): Boolean = isModelLoaded.get() && !isUnloading &&
