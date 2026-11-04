@@ -11,6 +11,7 @@ import android.os.SystemClock
 import android.util.Log
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.ArrayDeque
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -25,6 +26,7 @@ class OmniVoicePlayback {
     companion object {
         val activePlayers = AtomicInteger(0)
         val privateOutputRouted = AtomicBoolean(false)
+        private val targetPrebufferMs = AtomicInteger(360)
 
         private fun privateDevice(device: AudioDeviceInfo?): Boolean =
             when (device?.type) {
@@ -76,6 +78,23 @@ class OmniVoicePlayback {
 
         stop()
         val rate = first.sampleRate
+        val prebufferMs = targetPrebufferMs.get()
+        val startChunks = ArrayDeque<PcmChunk>()
+        startChunks.addLast(first)
+        var queuedFrames = first.bytes.size / 2L
+        val timeoutAt = SystemClock.elapsedRealtime() + 600L
+        while (queuedFrames * 1000L / rate < prebufferMs) {
+            val remaining = timeoutAt - SystemClock.elapsedRealtime()
+            if (remaining <= 0L) break
+            val next = withTimeoutOrNull(remaining) { chunks.receiveCatching().getOrNull() }
+                ?: break
+            check(next.sampleRate == rate && next.bytes.size % 2 == 0) {
+                "Mixed output changed PCM format during prebuffer"
+            }
+            startChunks.addLast(next)
+            queuedFrames += next.bytes.size / 2L
+            check(queuedFrames <= rate * 4L) { "Prebuffer exceeded four seconds" }
+        }
         val minimum = AudioTrack.getMinBufferSize(
             rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         require(minimum > 0) { "Unsupported streaming PCM sample rate" }
@@ -111,12 +130,11 @@ class OmniVoicePlayback {
                         .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                         .build())
                 .setTransferMode(AudioTrack.MODE_STREAM)
-                .setBufferSizeInBytes(maxOf(minimum, 8192))
+                .setBufferSizeInBytes(maxOf(minimum, rate * 2 * (prebufferMs + 250) / 1000))
                 .build()
             track = player
             check(player.state == AudioTrack.STATE_INITIALIZED) { "AudioTrack init failed" }
             synchronized(lock) { active = player }
-            player.play()
             activePlayers.incrementAndGet()
             counted = true
             privateOutputRouted.set(privateDevice(player.routedDevice))
@@ -144,7 +162,8 @@ class OmniVoicePlayback {
                     }
                 }
             }
-            writeChunk(first)
+            for (chunk in startChunks) writeChunk(chunk)
+            player.play()
             var lastChunkNs = SystemClock.elapsedRealtimeNanos()
             for (chunk in chunks) {
                 currentCoroutineContext().ensureActive()
@@ -169,8 +188,13 @@ class OmniVoicePlayback {
                     delay(20)
                 }
             }
+            val underruns = player.underrunCount
+            targetPrebufferMs.updateAndGet { current ->
+                if (underruns > 0) (current + 100).coerceAtMost(850)
+                else (current - 30).coerceAtLeast(250)
+            }
             if (Log.isLoggable("BoxVoiceNative", Log.DEBUG)) {
-                Log.d("BoxVoiceNative", "event=pcm_stream_end " +
+                Log.d("BoxVoiceNative", "event=pcm_stream_end prebuffer_ms=$prebufferMs " +
                     "sample_rate_hz=$rate total_frames=$totalSamples " +
                     "max_playback_wait_ms=$maxPlaybackWaitMs " +
                     "elapsed_ms=${(SystemClock.elapsedRealtimeNanos() - firstPlaybackNs) / 1_000_000L} " +

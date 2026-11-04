@@ -886,7 +886,8 @@ open class LlmChatViewModelBase() : ChatViewModel() {
         val extraContext = if (enableThinking) mapOf("enable_thinking" to "true") else null
 
         if (mixedVoiceActive && voiceEngine != null) {
-          val audioChannel = Channel<OmniVoicePlayback.PcmChunk>(capacity = 4)
+          // 32 × 40 ms audio windows = at most 1.28 seconds of queued PCM.
+          val audioChannel = Channel<OmniVoicePlayback.PcmChunk>(capacity = 32)
           val combinedAudio = ByteArrayOutputStream()
           var audioRate = 0
           var producedText = false
@@ -936,7 +937,14 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                 producedAudio = true
                 generatedPcmFrames += chunk.pcm16.size / 2L
                 combinedAudio.write(chunk.pcm16)
-                audioChannel.send(OmniVoicePlayback.PcmChunk(audioRate, chunk.pcm16))
+                val bytesPerWindow = ((audioRate * 40 / 1000).coerceAtLeast(1)) * 2
+                var offset = 0
+                while (offset < chunk.pcm16.size) {
+                  val end = minOf(offset + bytesPerWindow, chunk.pcm16.size)
+                  audioChannel.send(OmniVoicePlayback.PcmChunk(
+                    audioRate, chunk.pcm16.copyOfRange(offset, end)))
+                  offset = end
+                }
               }
             }
             audioChannel.close()
