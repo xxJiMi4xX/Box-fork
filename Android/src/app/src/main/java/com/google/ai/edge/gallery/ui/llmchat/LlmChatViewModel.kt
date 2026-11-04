@@ -250,6 +250,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     } ?: return
     turn.failed.set(true)
     turn.frames.cancel()
+    if (!turn.completed.isCompleted) turn.engine.interruptLiveEncoding()
     turn.worker?.cancel()
     val oldCleanup = synchronized(liveCaptureLock) { previousLiveCleanup }
     val cleanup = viewModelScope.launch(Dispatchers.IO) {

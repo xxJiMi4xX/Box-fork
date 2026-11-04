@@ -542,6 +542,15 @@ class LlamaCppEngine {
         }
     }
 
+    /**
+     * Nonblocking capture abort: the atomic native stop flag is safe while
+     * the encoder is inside llama_decode and no Java mutex is acquired.
+     */
+    fun interruptLiveEncoding() {
+        activeMicrophoneFrames.get()?.cancel()
+        runCatching { instance.requestStop() }
+    }
+
     /** Inspect pending native audio after independent Greek transcription. */
     suspend fun hasPreparedLiveAudio(): Boolean = withContext(Dispatchers.IO) {
         sessionMutex.withLock {
