@@ -175,7 +175,9 @@ fun OmniVoiceScreen(
     val status = selected?.let { manager.modelInitializationStatus[it.name] }
     val isInitialized = status?.status == ModelInitializationStatusType.INITIALIZED
     val engine = selected?.instance as? LlamaCppEngine
-    val modelLoaded = isInitialized && engine?.isModelLoaded?.get() == true
+    val modelLoaded = isInitialized && engine?.isModelLoaded?.get() == true &&
+        engine.sessionState != LlamaCppEngine.SessionState.ERROR &&
+        engine.sessionState != LlamaCppEngine.SessionState.UNLOADING
     val hasFullAudio = modelLoaded && engine?.supportsGreekVoice == true
     val projector = selected?.let {
         GgufAudioFiles.findProjector(context, it.getPath(context))
@@ -292,7 +294,9 @@ fun OmniVoiceScreen(
                         Text(
                             when {
                                 engine?.sessionState == LlamaCppEngine.SessionState.ERROR ->
-                                    "Σφάλμα: " + engine.lastLifecycleError.orEmpty()
+                                    "Σφάλμα: " + engine?.lastLifecycleError.orEmpty()
+                                engine?.sessionState == LlamaCppEngine.SessionState.LOADING ->
+                                    "Φόρτωση / επαναφόρτωση μοντέλου…"
                                 unloading || engine?.isUnloading == true -> "Αποδέσμευση μοντέλου…"
                                 !modelLoaded -> "Μοντέλο μη φορτωμένο"
                                 engine?.lastLoadParams?.numGpuLayers == 0 -> "CPU • Έτοιμο"

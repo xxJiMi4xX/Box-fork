@@ -26,7 +26,7 @@ class OmniVoicePlayback {
     companion object {
         val activePlayers = AtomicInteger(0)
         val privateOutputRouted = AtomicBoolean(false)
-        private val targetPrebufferMs = AtomicInteger(360)
+        private val targetPrebufferMs = AtomicInteger(VoiceAudioBufferPolicy.INITIAL_PREBUFFER_MS)
 
         private fun privateDevice(device: AudioDeviceInfo?): Boolean =
             when (device?.type) {
@@ -190,8 +190,7 @@ class OmniVoicePlayback {
             }
             val underruns = player.underrunCount
             targetPrebufferMs.updateAndGet { current ->
-                if (underruns > 0) (current + 100).coerceAtMost(850)
-                else (current - 30).coerceAtLeast(250)
+                VoiceAudioBufferPolicy.adaptPrebuffer(current, underruns)
             }
             if (Log.isLoggable("BoxVoiceNative", Log.DEBUG)) {
                 Log.d("BoxVoiceNative", "event=pcm_stream_end prebuffer_ms=$prebufferMs " +

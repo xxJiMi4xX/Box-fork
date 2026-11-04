@@ -26,6 +26,7 @@ import com.google.ai.edge.gallery.data.ConfigKeys
 import com.google.ai.edge.gallery.engine.LlamaCppEngine
 import com.google.ai.edge.gallery.engine.OmniVoicePlayback
 import com.google.ai.edge.gallery.engine.WavPcm16
+import com.google.ai.edge.gallery.engine.VoiceAudioBufferPolicy
 import com.google.ai.edge.gallery.data.Model
 import com.google.ai.edge.gallery.data.Task
 import com.google.ai.edge.gallery.data.local.ChatRepository
@@ -899,7 +900,8 @@ open class LlmChatViewModelBase() : ChatViewModel() {
 
         if (mixedVoiceActive && voiceEngine != null) {
           // 32 × 40 ms audio windows = at most 1.28 seconds of queued PCM.
-          val audioChannel = Channel<OmniVoicePlayback.PcmChunk>(capacity = 32)
+          val audioChannel = Channel<OmniVoicePlayback.PcmChunk>(
+            capacity = VoiceAudioBufferPolicy.QUEUED_WINDOWS)
           val combinedAudio = ByteArrayOutputStream()
           var audioRate = 0
           var producedText = false
@@ -950,7 +952,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                 producedAudio = true
                 generatedPcmFrames += chunk.pcm16.size / 2L
                 combinedAudio.write(chunk.pcm16)
-                val bytesPerWindow = ((audioRate * 40 / 1000).coerceAtLeast(1)) * 2
+                val bytesPerWindow = VoiceAudioBufferPolicy.windowBytes(audioRate)
                 var offset = 0
                 while (offset < chunk.pcm16.size) {
                   val end = minOf(offset + bytesPerWindow, chunk.pcm16.size)

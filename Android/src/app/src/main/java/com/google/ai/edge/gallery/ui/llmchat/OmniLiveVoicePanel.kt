@@ -55,7 +55,7 @@ fun OmniLiveVoicePanel(
     var enabled by remember(model.name) { mutableStateOf(false) }
     var status by remember(model.name) { mutableStateOf("Απενεργοποιημένο") }
     val engine = model.instance as? LlamaCppEngine
-    val canStart = engine?.isModelLoaded?.get() == true
+    val canStart = engine?.isReady() == true
 
     val startListening: () -> Unit = {
         try {
