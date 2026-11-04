@@ -638,7 +638,8 @@ void LLMInference::startRealtimeMixedCompletion(const char *transcript) {
     if (!transcript || !*transcript || !realtimeAudioCommitted_ ||
         !mmproj_ || !isLfm3_ || generating_)
         throw std::runtime_error("Realtime mixed response requires committed audio and transcript");
-    if (stopRequested_.load()) throw std::runtime_error("Realtime audio was cancelled");
+    // The exclusive owner has now started a new prepared response.
+    stopRequested_.store(false);
     realtimeAudioCommitted_ = false;
     beforeGeneration_ = messages_;
     messages_.emplace_back("user", transcript);

@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -403,6 +404,7 @@ class LlamaCppEngine {
     suspend fun streamMixedResponse(
         query: String,
         onChunk: suspend (SmolLM.MixedVoiceStep) -> Unit,
+        preparedAudio: Boolean = false,
     ): GenerationResult {
         check(isModelLoaded.get() && !isUnloading && supportsGreekVoice) {
             "Mixed LFM3 speech requires a loaded voice-capable GGUF"
@@ -415,7 +417,16 @@ class LlamaCppEngine {
                     "Mixed generation superseded or model unloaded"
                 }
                 val model = instance
-                val handle = nativeMutex.withLock { model.beginMixedResponse(query) }
+                val handle = nativeMutex.withLock {
+                    if (preparedAudio) {
+                        check(model.hasCommittedRealtimeAudio()) {
+                            "No intact native audio stream for prepared reply"
+                        }
+                        model.beginRealtimeMixedResponse(query)
+                    } else {
+                        model.beginMixedResponse(query)
+                    }
+                }
                 isGenerating = true
                 publishState(SessionState.GENERATING)
                 val full = StringBuilder()
@@ -455,6 +466,70 @@ class LlamaCppEngine {
                     isGenerating = false
                     markReadyAfterWorker()
                 }
+            }
+        }
+    }
+
+    /**
+     * Consume real microphone frames while AudioRecord is still recording.
+     * One serialized native owner spans the full capture turn. The capture
+     * callback only trySend()s frames; it never blocks on JNI.
+     */
+    suspend fun encodeLiveMicrophone(
+        frames: ReceiveChannel<ByteArray>,
+        sourceRate: Int,
+    ): Boolean = withContext(Dispatchers.IO) {
+        require(sourceRate in 8000..192000)
+        sessionMutex.withLock {
+            if (!isModelLoaded.get() || isUnloading || !supportsGreekVoice) {
+                frames.cancel()
+                return@withLock false
+            }
+            val model = instance
+            var started = false
+            var committed = false
+            try {
+                val targetRate = nativeMutex.withLock {
+                    if (!model.supportsRealtimeAudio()) return@withLock false
+                    model.audioSampleRate()
+                }
+                check(targetRate in 8000..192000) { "Invalid LFM3 input rate" }
+                val converter = LivePcm16Resampler(sourceRate, targetRate)
+                nativeMutex.withLock {
+                    model.beginRealtimeAudio()
+                    started = true
+                }
+                publishState(SessionState.LISTENING)
+                for (frame in frames) {
+                    currentCoroutineContext().ensureActive()
+                    check(isModelLoaded.get() && !isUnloading)
+                    val data = converter.append(frame)
+                    if (data.isNotEmpty()) {
+                        nativeMutex.withLock { model.appendRealtimeAudio(data) }
+                    }
+                }
+                val tail = converter.finish()
+                if (tail.isNotEmpty()) {
+                    nativeMutex.withLock { model.appendRealtimeAudio(tail) }
+                }
+                nativeMutex.withLock { model.commitRealtimeAudio() }
+                committed = true
+                true
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Log.w("BoxVoiceNative",
+                    "Live PCM staging unavailable; falling back to completed-utterance ASR",
+                    error)
+                false
+            } finally {
+                frames.cancel()
+                if (started && !committed) {
+                    withContext(NonCancellable) {
+                        nativeMutex.withLock { model.abortRealtimeAudio() }
+                    }
+                }
+                markReadyAfterWorker()
             }
         }
     }
