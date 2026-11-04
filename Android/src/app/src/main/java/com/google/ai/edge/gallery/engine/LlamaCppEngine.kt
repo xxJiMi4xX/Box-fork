@@ -414,9 +414,11 @@ class LlamaCppEngine {
                     withContext(NonCancellable) {
                         nativeMutex.withLock { model.endMixedResponse(handle) }
                     }
-                    if (generationEpoch.get() == epoch) {
-                        isGenerating = false
-                        if (!isUnloading) stateRef.set(SessionState.READY)
+                    // The serialized owner is still held. In-flight native
+                    // work has now stopped, even for cancelled epochs.
+                    isGenerating = false
+                    if (!isUnloading && stateRef.get() != SessionState.ERROR) {
+                        stateRef.set(SessionState.READY)
                     }
                 }
             }
@@ -513,9 +515,11 @@ class LlamaCppEngine {
                             model.abortRealtimeAudio()
                         }
                     }
-                    if (generationEpoch.get() == epoch) {
-                        isGenerating = false
-                        if (!isUnloading) stateRef.set(SessionState.READY)
+                    // The serialized owner is still held. In-flight native
+                    // work has now stopped, even for cancelled epochs.
+                    isGenerating = false
+                    if (!isUnloading && stateRef.get() != SessionState.ERROR) {
+                        stateRef.set(SessionState.READY)
                     }
                 }
             }
@@ -538,6 +542,7 @@ class LlamaCppEngine {
         generationJob = scope.launch {
             try {
                 val result = sessionMutex.withLock {
+                    try {
                     nativeMutex.withLock {
                     check(isModelLoaded.get() && !isUnloading && generationEpoch.get() == epoch) {
                         "Model was unloaded or this response was superseded"
@@ -567,6 +572,13 @@ class LlamaCppEngine {
                         contextLengthUsed = model.getContextLengthUsed(),
                     )
                     }
+                    } finally {
+                        // State is released while still owning the session mutex.
+                        isGenerating = false
+                        if (!isUnloading && stateRef.get() != SessionState.ERROR) {
+                            stateRef.set(SessionState.READY)
+                        }
+                    }
                 }
                 withContext(Dispatchers.Main) {
                     if (generationEpoch.get() == epoch) onComplete(result)
@@ -580,10 +592,8 @@ class LlamaCppEngine {
                     if (generationEpoch.get() == epoch) onError(error)
                 }
             } finally {
-                if (generationEpoch.get() == epoch) {
-                    isGenerating = false
-                    if (!isUnloading) stateRef.set(SessionState.READY)
-                }
+                // State was released under sessionMutex, not here:
+                // a newer turn might already be generating.
             }
         }
     }
@@ -615,7 +625,7 @@ class LlamaCppEngine {
         // holds its model mutex for a long ASR or synthesis operation.
         runCatching { instance.requestStop() }
         generationJob?.cancel()
-        isGenerating = false
+        // Do not report idle until the serialized JNI operation has exited.
     }
 
     fun benchModel(pp: Int = 512, tg: Int = 128, pl: Int = 1, nr: Int = 3): String {
@@ -625,5 +635,6 @@ class LlamaCppEngine {
     }
 
     fun isReady(): Boolean = isModelLoaded.get() && !isUnloading &&
+        stateRef.get() == SessionState.READY &&
         lastLifecycleError == null && !isGenerating && !isVoiceBusy
 }
