@@ -41,9 +41,10 @@ internal class LivePcm16Resampler(
         fun at(position: Long): Float =
             if (position == start - 1) lastSample
             else samples[(position - start).toInt()]
-        // The nominal output duration must match complete-buffer
-        // conversion even if frame boundaries are irregular.
-        val nominalOutputs = max(1L, end * targetRate / sourceRate)
+        // Ceil the output count before discarding old input: flooring here
+        // defers an already available downsampled position beyond the next
+        // chunk and loses its interpolation samples.
+        val nominalOutputs = max(1L, (end * targetRate + sourceRate - 1L) / sourceRate)
         while (outputCount < nominalOutputs) {
             val numerator = outputCount * sourceRate.toLong()
             val left = numerator / targetRate
@@ -65,8 +66,8 @@ internal class LivePcm16Resampler(
         check(!closed)
         closed = true
         if (inputCount == 0L) return FloatArray(0)
-        // Same nominal duration as the complete-WAV converter.
-        val finalCount = max(1L, inputCount * targetRate / sourceRate)
+        // Round up the final fractional sample and hold the last PCM value.
+        val finalCount = max(1L, (inputCount * targetRate + sourceRate - 1L) / sourceRate)
         val remaining = finalCount - outputCount
         check(remaining in 0..(targetRate.toLong() / sourceRate + 2L)) {
             "Unexpected PCM resampler tail"

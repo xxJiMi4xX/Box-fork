@@ -5,7 +5,6 @@ import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -59,8 +58,19 @@ internal class NativeSessionMailbox(
         execute: suspend () -> T,
     ): T {
         val context = coroutineContext
-        val reply = CompletableDeferred<T>(context[Job])
-        operations.send(Request(type, context, reply, execute))
-        return reply.await()
+        // IMPORTANT: an exceptionally completed child Deferred with a
+        // parent Job would cancel the calling coroutine *even when the
+        // failure is caught*, poisoning later turns and unit tests.
+        // Own the completion independently, but still propagate caller
+        // cancellation through await() and the captured execution context.
+        val reply = CompletableDeferred<T>()
+        try {
+            operations.send(Request(type, context, reply, execute))
+            return reply.await()
+        } finally {
+            // On cancellation, queued operations must be skipped; a running
+            // one is interrupted by its captured coroutine context.
+            reply.cancel()
+        }
     }
 }

@@ -53,6 +53,28 @@ class LivePcm16ResamplerTest {
         }
     }
 
+    @Test fun fractionalOutputLengthMatchesAcrossFrameBoundaries() {
+        val input = pcm(1001)
+        for (sourceRate in listOf(8_000, 16_000, 48_000)) {
+            for (targetRate in listOf(8_000, 16_000, 24_000, 48_000)) {
+                val full = LivePcm16Resampler(sourceRate, targetRate)
+                val a = full.append(input).toList() + full.finish().toList()
+                val segmented = LivePcm16Resampler(sourceRate, targetRate)
+                val b = segmented.append(input.copyOfRange(0, 10)).toList() +
+                    segmented.append(input.copyOfRange(10, 60)).toList() +
+                    segmented.append(input.copyOfRange(60, 902)).toList() +
+                    segmented.append(input.copyOfRange(902, input.size)).toList() +
+                    segmented.finish().toList()
+                assertEquals((1001L * targetRate + sourceRate - 1) / sourceRate,
+                    a.size.toLong())
+                assertEquals(a.size, b.size)
+                a.zip(b).forEach { (left, right) ->
+                    assertEquals(left, right, 0.00001f)
+                }
+            }
+        }
+    }
+
     @Test fun sourceDurationAndAmplitudeArePreserved() {
         val r = LivePcm16Resampler(16_000, 24_000)
         val steady = ByteArray(640) { idx ->
