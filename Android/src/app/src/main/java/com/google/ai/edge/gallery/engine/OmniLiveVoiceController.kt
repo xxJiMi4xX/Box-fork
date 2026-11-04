@@ -80,6 +80,10 @@ class OmniLiveVoiceController(private val context: Context) {
     fun start(
         scope: CoroutineScope,
         onSpeechStart: () -> Unit,
+        // Executed on the capture IO thread; MUST return immediately and
+        // MUST NOT call JNI/ASR or wait for a coroutine.
+        onSpeechFrame: (ByteArray, Int) -> Unit = { _, _ -> },
+        onSpeechEnd: () -> Unit = {},
         onUtterance: (ByteArray, Int) -> Unit,
         onError: (String) -> Unit,
         onStopped: () -> Unit,
@@ -196,6 +200,7 @@ class OmniLiveVoiceController(private val context: Context) {
                         voiced = 0
                         silence = 0
                         total = 0
+                        if (inSpeech) onSpeechEnd()
                         inSpeech = false
                         continue
                     }
@@ -225,16 +230,20 @@ class OmniLiveVoiceController(private val context: Context) {
                             silence = 0
                             total = 0
                             speech.reset()
+                            // Open the bounded native input queue first, then
+                            // enqueue the pre-roll so onset phonemes are preserved.
+                            withContext(Dispatchers.Main) { onSpeechStart() }
                             for (buffer in preRoll) {
                                 speech.write(buffer)
                                 total++
+                                onSpeechFrame(buffer, SAMPLE_RATE)
                             }
                             preRoll.clear()
-                            withContext(Dispatchers.Main) { onSpeechStart() }
                         }
                         continue
                     }
                     speech.write(frame, 0, available)
+                    onSpeechFrame(frame.copyOf(available), SAMPLE_RATE)
                     total++
                     if (loud) {
                         voiced++
@@ -248,6 +257,7 @@ class OmniLiveVoiceController(private val context: Context) {
                         Log.i("BoxVoiceLatency",
                             "stage=vad_utterance_end event_ns=$vadEndNs " +
                             "elapsedMs=$speechWindowMs trailingSilenceMs=${silence * FRAME_MS} frames=$total")
+                        onSpeechEnd()
                         if (voiced >= MIN_UTTERANCE_FRAMES &&
                             speech.size() <= MAX_UTTERANCE_FRAMES * FRAME_BYTES + PRE_ROLL_FRAMES * FRAME_BYTES) {
                             val bytes = speech.toByteArray()
@@ -268,6 +278,7 @@ class OmniLiveVoiceController(private val context: Context) {
                     onError(error.message ?: "Σφάλμα μικροφώνου")
                 }
             } finally {
+                if (inSpeech) runCatching { onSpeechEnd() }
                 if (counted) activeMicrophones.decrementAndGet()
                 val finishingJob = currentCoroutineContext()[Job]
                 synchronized(lock) {
