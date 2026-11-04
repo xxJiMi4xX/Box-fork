@@ -518,16 +518,20 @@ void LLMInference::startMixedCompletion(const char *query) {
 
 bool LLMInference::supportsRealtimeAudio() {
     std::lock_guard<std::mutex> lock(mutex_);
-    // The experimental adapter cannot yet prove recurrent sequence continuity
-    // after a previous text/audio response. Route such turns through the
-    // established ASR + mixed path rather than corrupting hybrid state.
-    const bool freshConversation =
-        contextUsed_ == 0 &&
+    // A restored Room transcript is not a decoded recurrent state.
+    // It becomes eligible only after normal chat prefill; while a live
+    // context has an intact memory position we may append audio directly,
+    // following the pinned server-realtime slot's decode semantics.
+    const bool fresh = contextUsed_ == 0 &&
         (messages_.empty() ||
          (messages_.size() == 1 && messages_.front().first == "system"));
+    const bool hot = contextUsed_ > 0 &&
+        llama_memory_seq_pos_max(llama_get_memory(context_), 0) + 1 ==
+            static_cast<llama_pos>(contextUsed_);
     return mmproj_ && isLfm3_ && mtmd_support_audio_stream(mmproj_) &&
-        freshConversation && !generating_ && !realtimeInput_ &&
-        !realtimeAudioCommitted_;
+        (fresh || hot) && !generating_ && !realtimeInput_ &&
+        !realtimeAudioCommitted_ &&
+        contextUsed_ + 512 < static_cast<int32_t>(llama_n_ctx(context_));
 }
 
 bool LLMInference::hasCommittedRealtimeAudio() {
@@ -541,11 +545,16 @@ void LLMInference::beginRealtimeAudio() {
         throw std::runtime_error("This LFM3 projector has no streaming audio input");
     if (generating_ || realtimeInput_ || realtimeAudioCommitted_)
         throw std::runtime_error("A realtime audio turn is already open");
-    if (contextUsed_ != 0 ||
-        !(messages_.empty() ||
-          (messages_.size() == 1 && messages_.front().first == "system")))
+    const bool fresh = contextUsed_ == 0 &&
+        (messages_.empty() ||
+         (messages_.size() == 1 && messages_.front().first == "system"));
+    const bool hot = contextUsed_ > 0 &&
+        llama_memory_seq_pos_max(llama_get_memory(context_), 0) + 1 ==
+            static_cast<llama_pos>(contextUsed_);
+    if ((!fresh && !hot) ||
+        contextUsed_ + 512 >= static_cast<int32_t>(llama_n_ctx(context_)))
         throw std::runtime_error(
-            "Realtime input continuation is not verified for hybrid context; use ASR+mixed fallback");
+            "Realtime audio requires an intact, non-overflowing native state");
     stopRequested_.store(false);
     realtimeInput_ = mtmd_audio_stream_init(mmproj_, mtmd_audio_stream_params_default());
     if (!realtimeInput_) throw std::runtime_error("Cannot initialize LFM3 audio stream");
@@ -560,9 +569,10 @@ void LLMInference::pumpRealtimeAudioLocked() {
         const int32_t ready = mtmd_audio_stream_step(realtimeInput_, LLAMA_TOKEN_NULL);
         if (ready == -2) throw std::runtime_error("LFM3 audio embedding stream failed");
         if (ready <= 0) return;
-        if (mtmd_audio_stream_is_seq_start(realtimeInput_) && contextUsed_ > 0)
-            throw std::runtime_error(
-                "Streaming audio requires a new sequence; hot hybrid state cannot be overwritten");
+        // The pinned upstream realtime slot appends stream rows to its
+        // current sequence; is_seq_start marks an audio segment boundary,
+        // NOT permission to erase the existing hybrid recurrent state.
+        // Do not call arbitrary seq_rm/n_keep on the LFM3 recurrent memory.
         const int32_t dim = llama_model_n_embd_inp(model_);
         const float *embd = mtmd_audio_stream_get_output_embd(realtimeInput_);
         if (dim <= 0 || !embd || contextUsed_ + ready + 1 >= static_cast<int32_t>(llama_n_ctx(context_)))
