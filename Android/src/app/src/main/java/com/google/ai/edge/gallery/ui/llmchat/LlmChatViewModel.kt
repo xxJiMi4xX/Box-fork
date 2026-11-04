@@ -144,12 +144,14 @@ open class LlmChatViewModelBase() : ChatViewModel() {
 
   private val liveCaptureLock = Any()
   private var liveCapture: LiveCaptureTurn? = null
+  private var claimedLiveCapture: LiveCaptureTurn? = null
   private var previousLiveCleanup: Job? = null
 
   /**
    * Complete Room reconciliation BEFORE touching the realtime native context.
-   * A restored conversation containing previous turns is currently rejected by
-   * the experimental first-turn native path; normal ASR/mixed remains available.
+   * A cold-restored history has no decoded recurrent state and therefore
+   * stays on the standard ASR/mixed route. A truly hot native context may
+   * continue the audio stream when there is adequate context capacity.
    */
   private suspend fun prepareLiveAudioHistory(
     model: Model, engine: LlamaCppEngine,
@@ -229,14 +231,21 @@ open class LlmChatViewModelBase() : ChatViewModel() {
   private fun takeLiveAudioCapture(model: Model): LiveCaptureTurn? =
     synchronized(liveCaptureLock) {
       val captured = liveCapture?.takeIf { it.modelName == model.name }
-      if (captured != null) liveCapture = null
+      if (captured != null) {
+        liveCapture = null
+        claimedLiveCapture = captured
+      }
       captured
     }
 
   fun abortLiveAudioCapture(model: Model) {
     val turn = synchronized(liveCaptureLock) {
       val captured = liveCapture?.takeIf { it.modelName == model.name }
-      if (captured != null) liveCapture = null
+        ?: claimedLiveCapture?.takeIf { it.modelName == model.name }
+      if (captured != null) {
+        if (liveCapture === captured) liveCapture = null
+        if (claimedLiveCapture === captured) claimedLiveCapture = null
+      }
       captured
     } ?: return
     turn.failed.set(true)
@@ -706,11 +715,9 @@ open class LlmChatViewModelBase() : ChatViewModel() {
             ?.takeIf { audioClips.isNotEmpty() }
         var effectiveInput = input
         var voiceRequested = false
-        var recordedVoiceWav: ByteArray? = null
         if (voiceEngine != null) {
           voiceTrace?.mark("asr_started")
           require(audioClips.size == 1) { "Record one voice clip per turn" }
-          recordedVoiceWav = audioClips.single().copyOf()
           val transcript = try {
             voiceEngine.transcribeWav(audioClips.single())
           } catch (cancelled: CancellationException) {
@@ -1231,11 +1238,32 @@ open class LlmChatViewModelBase() : ChatViewModel() {
           setPreparing(false)
           onError(e.message ?: "")
         }
+      } finally {
+        val staged = stagedVoiceTurn
+        if (staged != null) {
+          synchronized(liveCaptureLock) {
+            if (claimedLiveCapture === staged) claimedLiveCapture = null
+          }
+          // If generation never consumed the committed input, release it.
+          // Wait for the encoder before touching JNI; a newer microphone
+          // capture waits for this cleanup checkpoint.
+          val oldCleanup = synchronized(liveCaptureLock) { previousLiveCleanup }
+          val cleanup = viewModelScope.launch(Dispatchers.IO) {
+            oldCleanup?.join()
+            staged.worker?.join()
+            if (staged.engine.hasPreparedLiveAudio()) {
+              staged.engine.discardLiveAudio()
+            }
+          }
+          synchronized(liveCaptureLock) { previousLiveCleanup = cleanup }
+        }
       }
     }
   }
 
   fun stopResponse(model: Model) {
+    // Cancel pending native PCM *before* the next VAD turn is admitted.
+    abortLiveAudioCapture(model)
     requestEpoch.incrementAndGet()
     activeResponseJob?.cancel()
     voicePlaybackJob?.cancel()
