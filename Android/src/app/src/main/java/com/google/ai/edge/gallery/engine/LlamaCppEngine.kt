@@ -212,8 +212,16 @@ class LlamaCppEngine {
                     } catch (failure: Throwable) {
                         supportsGreekVoice = false
                         hardwareInfo = ""
-                        next.close()
-                        if (instance === next) instance = SmolLM()
+                        try {
+                            next.close()
+                            if (instance === next) instance = SmolLM()
+                        } catch (cleanupFailure: Throwable) {
+                            // JNI ownership is uncertain; never create another
+                            // native GGUF allocation in this process.
+                            fatalTeardownFailure.set(
+                                cleanupFailure.message ?: cleanupFailure.javaClass.simpleName)
+                            failure.addSuppressed(cleanupFailure)
+                        }
                         throw failure
                     }
                   }
