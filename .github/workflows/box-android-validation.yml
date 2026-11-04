@@ -143,9 +143,9 @@ jobs:
           unzip -Z1 "$apk" | grep -Fx "lib/arm64-v8a/libLiteRtCompilerPlugin_MediaTek.so"
           echo "MediaTek NPU dispatch/compiler libraries confirmed in $apk"
           "$ANDROID_HOME/build-tools/36.0.0/aapt2" dump badging "$apk" \
-            | grep -F "name='com.box.gallery.omni.voice.dev'"
+            | grep -F "name='com.box.gallery.omni.voice.full.dev'"
           "$ANDROID_HOME/build-tools/36.0.0/aapt2" dump badging "$apk" \
-            | grep -F "application-label:'Box Voice'"
+            | grep -F "application-label:'Box Voice Full Test'"
           sha256sum "$apk"
 
       - name: Upload debug APK if build succeeds
