@@ -53,7 +53,7 @@ extensions.configure<com.android.build.api.dsl.ApplicationExtension>("android") 
 
   buildTypes {
     debug {
-      applicationIdSuffix = ".omni.voice.dev"
+      applicationIdSuffix = ".omni.voice.full.dev"
       versionNameSuffix = "-omni-voice-dev"
     }
     release {
