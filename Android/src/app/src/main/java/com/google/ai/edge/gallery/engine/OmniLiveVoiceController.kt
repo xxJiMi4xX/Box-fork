@@ -278,7 +278,8 @@ class OmniLiveVoiceController(private val context: Context) {
                     onError(error.message ?: "Σφάλμα μικροφώνου")
                 }
             } finally {
-                if (inSpeech) runCatching { onSpeechEnd() }
+                // Safe even if VAD has not opened a turn; owner ignores it.
+                runCatching { onSpeechEnd() }
                 if (counted) activeMicrophones.decrementAndGet()
                 val finishingJob = currentCoroutineContext()[Job]
                 synchronized(lock) {
