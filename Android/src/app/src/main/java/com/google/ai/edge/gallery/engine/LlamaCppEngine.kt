@@ -401,6 +401,100 @@ class LlamaCppEngine {
         }
     }
 
+    /** Experimental, opt-in realtime audio route with native incremental encoding.
+     *  A real transcript is obtained by the existing Greek ASR before this call;
+     *  it is never synthesized from model responses or invented.
+     */
+    suspend fun supportsRealtimeAudioInput(): Boolean = withContext(Dispatchers.IO) {
+        sessionMutex.withLock {
+            nativeMutex.withLock {
+                isModelLoaded.get() && !isUnloading &&
+                    supportsGreekVoice && instance.supportsRealtimeAudio()
+            }
+        }
+    }
+
+    suspend fun streamRealtimeAudioResponse(
+        wav: ByteArray,
+        transcript: String,
+        onChunk: suspend (SmolLM.MixedVoiceStep) -> Unit,
+    ): GenerationResult {
+        require(transcript.isNotBlank() && wav.isNotEmpty())
+        check(isModelLoaded.get() && !isUnloading && supportsGreekVoice)
+        stopGeneration()
+        val epoch = generationEpoch.incrementAndGet()
+        return withContext(Dispatchers.IO) {
+            sessionMutex.withLock {
+                check(isModelLoaded.get() && !isUnloading && generationEpoch.get() == epoch)
+                val model = instance
+                val rate = nativeMutex.withLock { model.audioSampleRate() }
+                check(rate > 0) { "No LFM3 audio-input sample rate" }
+                val samples = WavPcm16.toFloatMono(wav, rate)
+                check(samples.isNotEmpty() && samples.size <= rate * 90)
+                val framesPerChunk = (rate * 40 / 1000).coerceAtLeast(1)
+                var handle: Long? = null
+                val full = StringBuilder()
+                try {
+                    nativeMutex.withLock { model.beginRealtimeAudio() }
+                    var offset = 0
+                    while (offset < samples.size) {
+                        currentCoroutineContext().ensureActive()
+                        check(generationEpoch.get() == epoch) { "Realtime audio superseded" }
+                        val end = minOf(samples.size, offset + framesPerChunk)
+                        val slice = samples.copyOfRange(offset, end)
+                        nativeMutex.withLock { model.appendRealtimeAudio(slice) }
+                        offset = end
+                    }
+                    nativeMutex.withLock { model.commitRealtimeAudio() }
+                    handle = nativeMutex.withLock { model.beginRealtimeMixedResponse(transcript) }
+                    isGenerating = true
+                    val activeHandle = checkNotNull(handle)
+                    val duration = measureTime {
+                        while (true) {
+                            currentCoroutineContext().ensureActive()
+                            check(generationEpoch.get() == epoch) {
+                                "Realtime generation superseded"
+                            }
+                            val chunk = nativeMutex.withLock {
+                                model.nextMixedResponse(activeHandle)
+                            }
+                            if (chunk.text.isNotEmpty() || chunk.pcm16.isNotEmpty()) {
+                                full.append(chunk.text)
+                                onChunk(chunk)
+                            }
+                            if (chunk.done) break
+                        }
+                    }
+                    GenerationResult(
+                        response = full.toString(),
+                        tokensPerSecond = nativeMutex.withLock {
+                            model.getResponseGenerationSpeed()
+                        },
+                        durationSeconds = duration.inWholeSeconds.toInt(),
+                        contextLengthUsed = nativeMutex.withLock {
+                            model.getContextLengthUsed()
+                        },
+                    )
+                } catch (error: Throwable) {
+                    // A partially encoded hybrid stream cannot be rolled back
+                    // as a plain transformer KV prefix. Require cold Room restore.
+                    hotRoomConversationId = null
+                    hotRoomModelEpoch = -1L
+                    throw error
+                } finally {
+                    withContext(NonCancellable) {
+                        nativeMutex.withLock {
+                            val finished = handle
+                            if (finished != null) model.endMixedResponse(finished)
+                            model.abortRealtimeAudio()
+                        }
+                    }
+                    if (generationEpoch.get() == epoch) isGenerating = false
+                }
+            }
+        }
+    }
+
     fun generateResponse(
         query: String,
         onToken: (String) -> Unit,
@@ -480,6 +574,10 @@ class LlamaCppEngine {
     }
 
     fun stopGeneration() {
+        if (isGenerating) {
+            hotRoomConversationId = null
+            hotRoomModelEpoch = -1L
+        }
         generationEpoch.incrementAndGet()
         // Native requestStop writes an atomic flag and is safe while JNI
         // holds its model mutex for a long ASR or synthesis operation.
@@ -494,5 +592,6 @@ class LlamaCppEngine {
         } else "Model not loaded"
     }
 
-    fun isReady(): Boolean = isModelLoaded.get() && !isUnloading && !isGenerating && !isVoiceBusy
+    fun isReady(): Boolean = isModelLoaded.get() && !isUnloading &&
+        lastLifecycleError == null && !isGenerating && !isVoiceBusy
 }
