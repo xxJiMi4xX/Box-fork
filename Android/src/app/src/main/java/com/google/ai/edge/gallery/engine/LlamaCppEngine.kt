@@ -76,6 +76,10 @@ class LlamaCppEngine {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val nativeMutex = Mutex()
     private val sessionMutex = Mutex()
+    // Closing a capture channel is nonblocking and releases a session owner
+    // waiting for another AudioRecord frame before model unload/reset.
+    private val activeMicrophoneFrames =
+        AtomicReference<ReceiveChannel<ByteArray>?>(null)
     private fun traceMemory(stage: String, epoch: Long) {
         if (!Log.isLoggable("BoxVoiceNative", Log.DEBUG)) return
         val info = Debug.MemoryInfo()
@@ -147,6 +151,7 @@ class LlamaCppEngine {
         hotRoomSystemPrompt = null
 
         stopGeneration()
+        activeMicrophoneFrames.get()?.cancel()
         loadJob?.cancel()
         val epoch = lifecycleEpoch.incrementAndGet()
         traceMemory("load_requested", epoch)
@@ -222,6 +227,7 @@ class LlamaCppEngine {
 
     fun unloadModel(onDone: () -> Unit = {}) {
         stopGeneration()
+        activeMicrophoneFrames.get()?.cancel()
         loadJob?.cancel()
         val epoch = lifecycleEpoch.incrementAndGet()
         traceMemory("unload_requested", epoch)
@@ -480,11 +486,12 @@ class LlamaCppEngine {
         sourceRate: Int,
     ): Boolean = withContext(Dispatchers.IO) {
         require(sourceRate in 8000..192000)
-        sessionMutex.withLock {
+        sessionMutex.withLock liveSession@{
             if (!isModelLoaded.get() || isUnloading || !supportsGreekVoice) {
                 frames.cancel()
-                return@withLock false
+                return@liveSession false
             }
+            activeMicrophoneFrames.set(frames)
             val model = instance
             var started = false
             var committed = false
@@ -492,7 +499,7 @@ class LlamaCppEngine {
                 val targetRate = nativeMutex.withLock {
                     if (model.supportsRealtimeAudio()) model.audioSampleRate() else 0
                 }
-                if (targetRate == 0) return@withLock false
+                if (targetRate == 0) return@liveSession false
                 check(targetRate in 8000..192000) { "Invalid LFM3 input rate" }
                 val converter = LivePcm16Resampler(sourceRate, targetRate)
                 nativeMutex.withLock {
@@ -523,6 +530,7 @@ class LlamaCppEngine {
                     error)
                 false
             } finally {
+                activeMicrophoneFrames.compareAndSet(frames, null)
                 frames.cancel()
                 if (started && !committed) {
                     withContext(NonCancellable) {
@@ -748,6 +756,7 @@ class LlamaCppEngine {
     }
 
     fun stopGeneration() {
+        activeMicrophoneFrames.get()?.cancel()
         if (isGenerating) {
             if (!isUnloading) publishState(SessionState.INTERRUPTING)
             hotRoomConversationId = null
