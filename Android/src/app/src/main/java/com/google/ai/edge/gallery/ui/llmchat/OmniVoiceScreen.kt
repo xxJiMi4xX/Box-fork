@@ -167,6 +167,11 @@ fun OmniVoiceScreen(
             VoiceGgufRuntimeSettings.mixedVoiceEnabled(context, it.getPath(context))
         } ?: false)
     }
+    var useNativeRealtimeAudio by remember(selected?.name) {
+        mutableStateOf(selected?.let {
+            VoiceGgufRuntimeSettings.realtimeAudioEnabled(context, it.getPath(context))
+        } ?: false)
+    }
     val status = selected?.let { manager.modelInitializationStatus[it.name] }
     val isInitialized = status?.status == ModelInitializationStatusType.INITIALIZED
     val engine = selected?.instance as? LlamaCppEngine
@@ -528,11 +533,35 @@ fun OmniVoiceScreen(
                     Text(if (useMixedVoice) "Ταυτόχρονη φωνή: ενεργή" else
                         "Ταυτόχρονη φωνή: ανενεργή")
                 }
-                if (useMixedVoice) Text(
-                    "Πειραματική παραγωγή κειμένου και PCM μαζί. " +
-                    "Απενεργοποίησέ την για να χρησιμοποιήσεις την παλιά φωνή.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
+                if (useMixedVoice) {
+                    Text(
+                        "Πειραματική παραγωγή κειμένου και PCM μαζί. " +
+                            "Μπορείς να επιστρέψεις στην προηγούμενη φωνή.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    OutlinedButton(
+                        enabled = !unloading,
+                        onClick = {
+                            val next = !useNativeRealtimeAudio
+                            runCatching {
+                                VoiceGgufRuntimeSettings.setRealtimeAudioEnabled(
+                                    context, selected.getPath(context), next)
+                            }.onSuccess {
+                                useNativeRealtimeAudio = next
+                                runtimeError = null
+                            }.onFailure { runtimeError = it.message }
+                        },
+                    ) {
+                        Text(if (useNativeRealtimeAudio)
+                            "Incremental audio: πειραματικό ON"
+                            else "Incremental audio: OFF")
+                    }
+                    Text(
+                        "Απαιτεί υποστήριξη mtmd_audio_stream από το mmproj. " +
+                            "Αν απουσιάζει, παραμένει ενεργή η παλιά μικτή διαδρομή.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { ggufPicker.launch(arrayOf("*/*")) }) {
@@ -635,6 +664,7 @@ fun OmniVoiceScreen(
                         model = selected,
                         viewModel = viewModel,
                         useMixedVoice = useMixedVoice,
+                        useNativeRealtimeAudio = useMixedVoice && useNativeRealtimeAudio,
                         onError = { viewModel.reportVoiceError(selected, it) },
                     )
                 } else {

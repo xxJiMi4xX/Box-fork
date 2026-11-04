@@ -41,10 +41,12 @@ fun OmniLiveVoicePanel(
     model: Model,
     viewModel: LlmChatViewModelBase,
     useMixedVoice: Boolean = false,
+    useNativeRealtimeAudio: Boolean = false,
     onError: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val currentMixedVoice by rememberUpdatedState(useMixedVoice)
+    val currentRealtimeAudio by rememberUpdatedState(useNativeRealtimeAudio)
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
     val controller = remember(model.name) {
@@ -78,6 +80,7 @@ fun OmniLiveVoicePanel(
                             input = "",
                             audioMessages = listOf(userClip),
                             useMixedVoice = currentMixedVoice,
+                            useNativeRealtimeAudio = currentRealtimeAudio,
                             onDone = { if (enabled) status = "Ακούω..." },
                             onError = { message ->
                                 if (enabled) status = "Ακούω..."

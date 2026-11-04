@@ -12,6 +12,7 @@ object VoiceGgufRuntimeSettings {
     private const val PREFS_NAME = "box_voice_gguf_runtime"
     private const val THREADS_PREFIX = "cpu_threads:"
     private const val MIXED_VOICE_PREFIX = "mixed_voice:"
+    private const val REALTIME_AUDIO_PREFIX = "realtime_audio:"
     private const val BATCH_THREADS_PREFIX = "batch_threads:"
     private const val GPU_LAYERS_PREFIX = "gpu_layers:"
     private const val GPU_PROJECTOR_PREFIX = "gpu_projector:"
@@ -90,6 +91,18 @@ object VoiceGgufRuntimeSettings {
     fun mixedVoiceEnabled(context: Context, modelPath: String): Boolean =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getBoolean(MIXED_VOICE_PREFIX + modelPath, false)
+
+    /** Opt-in until LFM3-Audio sample-rate, memory and cancellation gates pass. */
+    fun realtimeAudioEnabled(context: Context, modelPath: String): Boolean =
+        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(REALTIME_AUDIO_PREFIX + modelPath, false)
+
+    fun setRealtimeAudioEnabled(context: Context, modelPath: String, enabled: Boolean) {
+        check(context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putBoolean(REALTIME_AUDIO_PREFIX + modelPath, enabled).commit()) {
+            "Failed to save realtime voice setting"
+        }
+    }
 
     fun setMixedVoiceEnabled(context: Context, modelPath: String, enabled: Boolean) {
         check(context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

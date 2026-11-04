@@ -476,6 +476,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     onError: (String) -> Unit,
     allowThinking: Boolean = false,
     useMixedVoice: Boolean = false,
+    useNativeRealtimeAudio: Boolean = false,
   ) {
     val voiceTrace = if (audioMessages.isNotEmpty() && model.instance is LlamaCppEngine) {
       VoiceLatencyTrace.begin().also { it.mark("turn_requested") }
@@ -554,9 +555,11 @@ open class LlmChatViewModelBase() : ChatViewModel() {
             ?.takeIf { audioClips.isNotEmpty() }
         var effectiveInput = input
         var voiceRequested = false
+        var recordedVoiceWav: ByteArray? = null
         if (voiceEngine != null) {
           voiceTrace?.mark("asr_started")
           require(audioClips.size == 1) { "Record one voice clip per turn" }
+          recordedVoiceWav = audioClips.single().copyOf()
           val transcript = try {
             voiceEngine.transcribeWav(audioClips.single())
           } catch (cancelled: CancellationException) {
@@ -919,7 +922,8 @@ open class LlmChatViewModelBase() : ChatViewModel() {
           voicePlaybackJob = playerJob
           try {
             voiceTrace?.mark("mixed_generation_started")
-            voiceEngine.streamMixedResponse(effectiveInput) { chunk ->
+            val acceptMixedChunk:
+                suspend (com.jegly.offlineLLM.smollm.SmolLM.MixedVoiceStep) -> Unit = { chunk ->
               kotlinx.coroutines.currentCoroutineContext().ensureActive()
               if (requestEpoch.get() != epoch) {
                 throw CancellationException("Voice turn superseded")
@@ -955,6 +959,14 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                   offset = end
                 }
               }
+            }
+            val realtimeWav = recordedVoiceWav
+            if (useNativeRealtimeAudio && realtimeWav != null &&
+                voiceEngine.supportsRealtimeAudioInput()) {
+              voiceEngine.streamRealtimeAudioResponse(
+                realtimeWav, effectiveInput, acceptMixedChunk)
+            } else {
+              voiceEngine.streamMixedResponse(effectiveInput, acceptMixedChunk)
             }
             audioChannel.close()
             if (Log.isLoggable("BoxVoiceNative", Log.DEBUG)) {
