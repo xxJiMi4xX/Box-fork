@@ -74,7 +74,10 @@ class OmniVoicePlayback {
     ) = withContext(Dispatchers.IO) {
         val first = chunks.receiveCatching().getOrNull() ?: return@withContext
         require(first.sampleRate in 8000..192000 && first.bytes.isNotEmpty() &&
-            first.bytes.size % 2 == 0) { "Invalid first streaming PCM chunk" }
+            first.bytes.size % 2 == 0 &&
+            first.bytes.size <= VoiceAudioBufferPolicy.windowBytes(first.sampleRate)) {
+            "Invalid first streaming PCM chunk; expected at most one 40-ms window"
+        }
 
         stop()
         val rate = first.sampleRate
@@ -88,8 +91,10 @@ class OmniVoicePlayback {
             if (remaining <= 0L) break
             val next = withTimeoutOrNull(remaining) { chunks.receiveCatching().getOrNull() }
                 ?: break
-            check(next.sampleRate == rate && next.bytes.size % 2 == 0) {
-                "Mixed output changed PCM format during prebuffer"
+            check(next.sampleRate == rate && next.bytes.isNotEmpty() &&
+                next.bytes.size % 2 == 0 &&
+                next.bytes.size <= VoiceAudioBufferPolicy.windowBytes(rate)) {
+                "Mixed output changed PCM format or exceeded a 40-ms window"
             }
             startChunks.addLast(next)
             queuedFrames += next.bytes.size / 2L
@@ -144,8 +149,10 @@ class OmniVoicePlayback {
             val firstPlaybackNs = SystemClock.elapsedRealtimeNanos()
 
             suspend fun writeChunk(chunk: PcmChunk) {
-                check(chunk.sampleRate == rate && chunk.bytes.size % 2 == 0) {
-                    "Mixed audio sample-rate or alignment changed"
+                check(chunk.sampleRate == rate && chunk.bytes.isNotEmpty() &&
+                    chunk.bytes.size % 2 == 0 &&
+                    chunk.bytes.size <= VoiceAudioBufferPolicy.windowBytes(rate)) {
+                    "Mixed audio sample-rate, alignment or 40-ms window invalid"
                 }
                 var offset = 0
                 while (offset < chunk.bytes.size && currentCoroutineContext().isActive &&

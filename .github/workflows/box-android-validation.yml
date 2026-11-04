@@ -125,6 +125,7 @@ jobs:
           ./gradlew :app:testDebugUnitTest \
             --tests "com.google.ai.edge.gallery.ui.llmchat.VoiceTextSegmentsTest" \
             --tests "com.google.ai.edge.gallery.engine.WavPcm16Test" \
+            --tests "com.google.ai.edge.gallery.engine.VoiceAudioBufferPolicyTest" \
             --no-daemon --stacktrace --console=plain --max-workers=2
 
       - name: Verify MediaTek LiteRT NPU libraries are packaged in APK
