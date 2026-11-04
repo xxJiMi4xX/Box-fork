@@ -252,22 +252,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
       }
       error("Unreachable")
     }
-    val paired = mutableListOf<Pair<String, String>>()
-    var pendingUser: String? = null
-    for ((role, text) in history) {
-      when (role) {
-        "user" -> pendingUser = text
-        "assistant" -> {
-          val user = pendingUser
-          if (user != null) {
-            paired += "user" to user
-            paired += "assistant" to text
-            pendingUser = null
-          }
-        }
-      }
-    }
-    val window = paired.takeLast(200)
+    val window = GgufConversationPairs.completedWindow(history)
     if (historyGates[model.name] !== gate) return
     val restored = engine.restoreConversation(
       prompt, window, conversationId = conversationIds[model.name],
@@ -624,24 +609,11 @@ open class LlmChatViewModelBase() : ChatViewModel() {
               voiceTrace?.mark("room_read_started")
               val rows = chatRepository.getMessagesSync(ggufConversationId)
               voiceTrace?.mark("room_read_completed")
-              val paired = mutableListOf<Pair<String, String>>()
-              var pending: String? = null
-              for (row in rows) {
-                when (row.role) {
-                  "user" -> pending = row.content
-                  "assistant" -> {
-                    val userText = pending
-                    if (userText != null) {
-                      paired += "user" to userText
-                      paired += "assistant" to row.content
-                      pending = null
-                    }
-                  }
-                }
-              }
+              val window = GgufConversationPairs.completedWindow(
+                rows.map { it.role to it.content })
               voiceTrace?.mark("history_replay_started")
               ggufEngine.restoreConversation(
-                nativePrompt, paired.takeLast(200),
+                nativePrompt, window,
                 conversationId = ggufConversationId,
               )
               voiceTrace?.mark("history_restored")
