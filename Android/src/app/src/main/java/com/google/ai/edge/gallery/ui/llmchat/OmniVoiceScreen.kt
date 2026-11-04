@@ -14,6 +14,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -274,7 +275,8 @@ fun OmniVoiceScreen(
         }
     ) { padding ->
         Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
+            modifier = Modifier.fillMaxSize().padding(padding)
+                .imePadding().padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             if (selected == null) {
@@ -299,6 +301,14 @@ fun OmniVoiceScreen(
                                     "Φόρτωση / επαναφόρτωση μοντέλου…"
                                 unloading || engine?.isUnloading == true -> "Αποδέσμευση μοντέλου…"
                                 !modelLoaded -> "Μοντέλο μη φορτωμένο"
+                                engine?.sessionState == LlamaCppEngine.SessionState.LISTENING ->
+                                    "Αναγνώριση ελληνικής ομιλίας"
+                                engine?.sessionState == LlamaCppEngine.SessionState.GENERATING ->
+                                    "Παραγωγή απάντησης"
+                                engine?.sessionState == LlamaCppEngine.SessionState.SPEAKING ->
+                                    "Παραγωγή και αναπαραγωγή ήχου"
+                                engine?.sessionState == LlamaCppEngine.SessionState.INTERRUPTING ->
+                                    "Διακοπή προηγούμενου γύρου"
                                 engine?.lastLoadParams?.numGpuLayers == 0 -> "CPU • Έτοιμο"
                                 else -> "Vulkan ζητήθηκε • offload μη επιβεβαιωμένο"
                             },
