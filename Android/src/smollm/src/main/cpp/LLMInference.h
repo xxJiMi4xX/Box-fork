@@ -50,6 +50,12 @@ public:
     };
     void startMixedCompletion(const char *query);
     MixedStep mixedCompletionLoop();
+    bool supportsRealtimeAudio();
+    void beginRealtimeAudio();
+    void appendRealtimeAudio(const std::vector<float> &pcm);
+    void commitRealtimeAudio();
+    void abortRealtimeAudio();
+    void startRealtimeMixedCompletion(const char *transcript);
 
 private:
     std::mutex mutex_;
@@ -66,6 +72,9 @@ private:
     llama_sampler *sampler_ = nullptr;
     mtmd_context *mmproj_ = nullptr;
     mtmd_helper_gen_audio *mixedGen_ = nullptr;
+    mtmd_audio_stream *realtimeInput_ = nullptr;
+    size_t realtimeInputSamples_ = 0;
+    bool realtimeAudioCommitted_ = false;
     ggml_threadpool_t performancePool_ = nullptr;
     ggml_threadpool_t batchPool_ = nullptr;
     std::vector<float> mixedHidden_;
@@ -88,6 +97,8 @@ private:
     int64_t responseTimeUs_ = 0;
 
     llama_context *getAudioContextLocked();
+    void pumpRealtimeAudioLocked();
+    void setupMixedGenerationLocked();
     std::vector<llama_token> tokenize(const std::string &str);
     std::string tokenToPiece(llama_token token);
     void finishGeneration(bool commitResponse);

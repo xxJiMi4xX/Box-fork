@@ -55,6 +55,7 @@ LLMInference::~LLMInference() {
     stopRequested_.store(true);
     std::lock_guard<std::mutex> lock(mutex_);
     if (mixedGen_) mtmd_helper_gen_audio_free(mixedGen_);
+    if (realtimeInput_) mtmd_audio_stream_free(realtimeInput_);
     if (mmproj_) mtmd_free(mmproj_);
     if (sampler_) llama_sampler_free(sampler_);
     if (context_ && performancePool_) llama_detach_threadpool(context_);
@@ -467,6 +468,33 @@ void LLMInference::finishGeneration(bool commitResponse) {
 // The same llama_context generates both text and audio. The pinned mtmd
 // LFM3 pipeline supports continuing a conversation with <|mixed_start|>.
 // Never create a second loaded GGUF model or an independent TTS context.
+void LLMInference::setupMixedGenerationLocked() {
+    mixedGen_ = mtmd_helper_gen_audio_init(context_, mmproj_);
+    if (!mixedGen_) throw std::runtime_error("Cannot initialize LFM3 mixed text/audio pipeline");
+    const std::string marker = "<|mixed_start|>";
+    auto inp = mtmd_helper_gen_audio_inp_default();
+    inp.prompt = marker.c_str();
+    inp.prompt_len = marker.size();
+    inp.n_past = contextUsed_;
+    inp.seq_id = 0;
+    inp.stream = true;
+    inp.out_type = MTMD_HELPER_GEN_AUDIO_OUTTYPE_PCM;
+    inp.out_mode = MTMD_HELPER_GEN_AUDIO_OUT_AUTO;
+    chatPrefixValid_ = false;
+    if (mtmd_helper_gen_audio_set_input(mixedGen_, &inp) != 0)
+        throw std::runtime_error("LFM3 mixed output is not supported by this GGUF");
+    int32_t left = 0;
+    while ((left = mtmd_helper_gen_audio_step_prompt(
+                mixedGen_, static_cast<int32_t>(llama_n_batch(context_)))) > 0) {
+        if (stopRequested_.load()) throw std::runtime_error("Mixed prefill cancelled");
+    }
+    if (left < 0) throw std::runtime_error("Mixed audio prompt decoding failed");
+    const float *hidden = llama_get_embeddings_ith(context_, -1);
+    const int n_embd = llama_model_n_embd(model_);
+    if (!hidden || n_embd <= 0) throw std::runtime_error("No mixed generation hidden state");
+    mixedHidden_.assign(hidden, hidden + n_embd);
+}
+
 void LLMInference::startMixedCompletion(const char *query) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -478,34 +506,126 @@ void LLMInference::startMixedCompletion(const char *query) {
     std::lock_guard<std::mutex> lock(mutex_);
     try {
         if (stopRequested_.load()) throw std::runtime_error("Mixed generation cancelled");
-        mixedGen_ = mtmd_helper_gen_audio_init(context_, mmproj_);
-        if (!mixedGen_) throw std::runtime_error("Cannot initialize LFM3 mixed text/audio pipeline");
-        const std::string marker = "<|mixed_start|>";
-        auto inp = mtmd_helper_gen_audio_inp_default();
-        inp.prompt = marker.c_str();
-        inp.prompt_len = marker.size();
-        inp.n_past = contextUsed_;
-        inp.seq_id = 0;
-        inp.stream = true;
-        inp.out_type = MTMD_HELPER_GEN_AUDIO_OUTTYPE_PCM;
-        inp.out_mode = MTMD_HELPER_GEN_AUDIO_OUT_AUTO;
-        chatPrefixValid_ = false;
-        if (mtmd_helper_gen_audio_set_input(mixedGen_, &inp) != 0)
-            throw std::runtime_error("LFM3 mixed output is not supported by this GGUF");
-        int32_t left = 0;
-        while ((left = mtmd_helper_gen_audio_step_prompt(
-                    mixedGen_, static_cast<int32_t>(llama_n_batch(context_)))) > 0) {
-            if (stopRequested_.load()) throw std::runtime_error("Mixed prefill cancelled");
-        }
-        if (left < 0) throw std::runtime_error("Mixed audio prompt decoding failed");
-        const float *hidden = llama_get_embeddings_ith(context_, -1);
-        const int n_embd = llama_model_n_embd(model_);
-        if (!hidden || n_embd <= 0) throw std::runtime_error("No mixed generation hidden state");
-        mixedHidden_.assign(hidden, hidden + n_embd);
+        setupMixedGenerationLocked();
     } catch (...) {
         finishGeneration(false);
         llama_memory_clear(llama_get_memory(context_), false);
         llama_sampler_reset(sampler_);
+        throw;
+    }
+}
+
+
+bool LLMInference::supportsRealtimeAudio() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return mmproj_ && isLfm3_ && mtmd_support_audio_stream(mmproj_);
+}
+
+void LLMInference::beginRealtimeAudio() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!mmproj_ || !isLfm3_ || !mtmd_support_audio_stream(mmproj_))
+        throw std::runtime_error("This LFM3 projector has no streaming audio input");
+    if (generating_ || realtimeInput_ || realtimeAudioCommitted_)
+        throw std::runtime_error("A realtime audio turn is already open");
+    stopRequested_.store(false);
+    realtimeInput_ = mtmd_audio_stream_init(mmproj_, mtmd_audio_stream_params_default());
+    if (!realtimeInput_) throw std::runtime_error("Cannot initialize LFM3 audio stream");
+    realtimeInputSamples_ = 0;
+    chatPrefixValid_ = false;
+}
+
+void LLMInference::pumpRealtimeAudioLocked() {
+    if (!realtimeInput_) throw std::runtime_error("Audio stream is not open");
+    for (;;) {
+        if (stopRequested_.load()) throw std::runtime_error("Realtime audio was interrupted");
+        const int32_t ready = mtmd_audio_stream_step(realtimeInput_, LLAMA_TOKEN_NULL);
+        if (ready == -2) throw std::runtime_error("LFM3 audio embedding stream failed");
+        if (ready <= 0) return;
+        if (mtmd_audio_stream_is_seq_start(realtimeInput_) && contextUsed_ > 0)
+            throw std::runtime_error(
+                "Streaming audio requires a new sequence; hot hybrid state cannot be overwritten");
+        const int32_t dim = llama_model_n_embd_inp(model_);
+        const float *embd = mtmd_audio_stream_get_output_embd(realtimeInput_);
+        if (dim <= 0 || !embd || contextUsed_ + ready + 1 >= static_cast<int32_t>(llama_n_ctx(context_)))
+            throw std::runtime_error("LFM3 realtime audio exceeds available context");
+        const int32_t batchLimit = static_cast<int32_t>(llama_n_batch(context_));
+        for (int32_t i = 0; i < ready; i += batchLimit) {
+            const int32_t count = std::min(batchLimit, ready - i);
+            llama_batch batch = llama_batch_init(count, dim, 1);
+            for (int32_t j = 0; j < count; ++j) {
+                std::memcpy(batch.embd + static_cast<size_t>(j) * dim,
+                    embd + static_cast<size_t>(i + j) * dim, dim * sizeof(float));
+                batch.pos[j] = contextUsed_ + j;
+                batch.n_seq_id[j] = 1;
+                batch.seq_id[j][0] = 0;
+                batch.logits[j] = 0;
+            }
+            batch.n_tokens = count;
+            const int decoded = llama_decode(context_, batch);
+            llama_batch_free(batch);
+            if (decoded != 0) throw std::runtime_error("Cannot decode realtime audio embeddings");
+            contextUsed_ += count;
+        }
+    }
+}
+
+void LLMInference::appendRealtimeAudio(const std::vector<float> &pcm) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!realtimeInput_ || pcm.empty()) throw std::runtime_error("No active realtime audio");
+    const int32_t rate = mtmd_get_audio_sample_rate(mmproj_);
+    if (rate <= 0 || pcm.size() > static_cast<size_t>(rate) * 2 ||
+        realtimeInputSamples_ + pcm.size() > static_cast<size_t>(rate) * 90)
+        throw std::runtime_error("Realtime audio chunk or turn exceeds limit");
+    if (stopRequested_.load()) throw std::runtime_error("Audio cancelled");
+    if (mtmd_audio_stream_push(realtimeInput_, pcm.data(), pcm.size()) != 0)
+        throw std::runtime_error("LFM3 audio stream refused PCM samples");
+    realtimeInputSamples_ += pcm.size();
+    pumpRealtimeAudioLocked();
+}
+
+void LLMInference::commitRealtimeAudio() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!realtimeInput_ || realtimeInputSamples_ == 0)
+        throw std::runtime_error("Cannot commit empty realtime audio");
+    if (mtmd_audio_stream_flush(realtimeInput_, true) != 0)
+        throw std::runtime_error("Audio encoder flush failed");
+    pumpRealtimeAudioLocked();
+    mtmd_audio_stream_free(realtimeInput_);
+    realtimeInput_ = nullptr;
+    realtimeInputSamples_ = 0;
+    realtimeAudioCommitted_ = true;
+}
+
+void LLMInference::abortRealtimeAudio() {
+    // If decoding partially appended embeddings, recover via a full prefill.
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (realtimeInput_) mtmd_audio_stream_free(realtimeInput_);
+    realtimeInput_ = nullptr;
+    realtimeInputSamples_ = 0;
+    realtimeAudioCommitted_ = false;
+    chatPrefixValid_ = false;
+}
+
+void LLMInference::startRealtimeMixedCompletion(const char *transcript) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!transcript || !*transcript || !realtimeAudioCommitted_ ||
+        !mmproj_ || !isLfm3_ || generating_)
+        throw std::runtime_error("Realtime mixed response requires committed audio and transcript");
+    if (stopRequested_.load()) throw std::runtime_error("Realtime audio was cancelled");
+    realtimeAudioCommitted_ = false;
+    beforeGeneration_ = messages_;
+    messages_.emplace_back("user", transcript);
+    response_.clear();
+    pendingUtf8_.clear();
+    responseTokens_ = 0;
+    responseTimeUs_ = 0;
+    llama_sampler_reset(sampler_);
+    generating_ = true;
+    chatPrefixValid_ = false;
+    try {
+        setupMixedGenerationLocked();
+    } catch (...) {
+        finishGeneration(false);
         throw;
     }
 }
@@ -667,6 +787,10 @@ void LLMInference::resetConversation(const char *systemPrompt) {
     stopRequested_.store(false);
     messages_.clear();
     beforeGeneration_.clear();
+    if (realtimeInput_) mtmd_audio_stream_free(realtimeInput_);
+    realtimeInput_ = nullptr;
+    realtimeAudioCommitted_ = false;
+    realtimeInputSamples_ = 0;
     chatPrefixValid_ = false;
     decodedChatPrefix_.clear();
     if (*systemPrompt) messages_.emplace_back("system", systemPrompt);
