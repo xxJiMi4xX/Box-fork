@@ -65,8 +65,22 @@ fun OmniLiveVoicePanel(
                 onSpeechStart = {
                     if (enabled) {
                         status = "Σε ακούω..."
-                        // Barge-in stops synthesis, playback and in-flight generation.
+                        // Stop the previous answer before opening a native stream.
                         viewModel.stopResponse(model)
+                        if (currentMixedVoice && currentRealtimeAudio) {
+                            viewModel.beginLiveAudioCapture(
+                                model, OmniLiveVoiceController.SAMPLE_RATE)
+                        }
+                    }
+                },
+                onSpeechFrame = { pcm, rate ->
+                    if (currentMixedVoice && currentRealtimeAudio) {
+                        viewModel.offerLiveAudioFrame(model, pcm, rate)
+                    }
+                },
+                onSpeechEnd = { accepted ->
+                    if (currentMixedVoice && currentRealtimeAudio) {
+                        viewModel.endLiveAudioCapture(model, accepted)
                     }
                 },
                 onUtterance = { pcm, rate ->
@@ -93,10 +107,12 @@ fun OmniLiveVoicePanel(
                     status = "Πρόβλημα μικροφώνου"
                     enabled = false
                     viewModel.stopResponse(model)
+                    viewModel.abortLiveAudioCapture(model)
                     onError(reason)
                 },
                 onStopped = {
                     if (!controller.isActive) {
+                        viewModel.abortLiveAudioCapture(model)
                         viewModel.stopResponse(model)
                         enabled = false
                         status = "Απενεργοποιημένο"
@@ -126,6 +142,7 @@ fun OmniLiveVoicePanel(
                 event == Lifecycle.Event.ON_STOP ||
                 event == Lifecycle.Event.ON_DESTROY) {
                 controller.stop()
+                viewModel.abortLiveAudioCapture(model)
                 viewModel.stopResponse(model)
                 enabled = false
                 status = "Απενεργοποιημένο"
@@ -135,6 +152,7 @@ fun OmniLiveVoicePanel(
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             controller.stop()
+            viewModel.abortLiveAudioCapture(model)
             viewModel.stopResponse(model)
         }
     }
@@ -146,6 +164,7 @@ fun OmniLiveVoicePanel(
                 onClick = {
                     if (enabled) {
                         controller.stop()
+                        viewModel.abortLiveAudioCapture(model)
                         viewModel.stopResponse(model)
                         enabled = false
                         status = "Απενεργοποιημένο"
