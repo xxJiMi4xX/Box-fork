@@ -65,6 +65,7 @@ class LlamaCppEngine {
         // A failed JNI close leaves native ownership uncertain. Fail closed:
         // prohibit a second model allocation in this process.
         private val fatalTeardownFailure = AtomicReference<String?>(null)
+        fun globalNativeTeardownError(): String? = fatalTeardownFailure.get()
         // Loading and unloading model weights share process-wide llama.cpp
         // backend state; serialize ownership transitions across instances.
         private val globalModelMutex = Mutex()

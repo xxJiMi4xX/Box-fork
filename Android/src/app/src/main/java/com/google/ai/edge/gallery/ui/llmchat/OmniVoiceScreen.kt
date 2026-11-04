@@ -181,6 +181,7 @@ fun OmniVoiceScreen(
         engine?.sessionStatus ?: MutableStateFlow(LlamaCppEngine.SessionState.UNLOADED)
     }
     val currentSessionState by sessionFlow.collectAsState()
+    val fatalNativeTeardownError = LlamaCppEngine.globalNativeTeardownError()
     val modelLoaded = isInitialized && engine?.isModelLoaded?.get() == true &&
         currentSessionState != LlamaCppEngine.SessionState.ERROR &&
         currentSessionState != LlamaCppEngine.SessionState.UNLOADING
@@ -300,6 +301,8 @@ fun OmniVoiceScreen(
                             style = MaterialTheme.typography.titleSmall)
                         Text(
                             when {
+                                fatalNativeTeardownError != null ->
+                                    "Αποτυχία native unload — απαιτείται επανεκκίνηση εφαρμογής"
                                 currentSessionState == LlamaCppEngine.SessionState.ERROR ->
                                     "Σφάλμα: " + engine?.lastLifecycleError.orEmpty()
                                 currentSessionState == LlamaCppEngine.SessionState.LOADING ->
@@ -533,6 +536,11 @@ fun OmniVoiceScreen(
                     }
                     if (runtimeError != null) {
                         Text(runtimeError!!, color = MaterialTheme.colorScheme.error)
+                    }
+                    if (fatalNativeTeardownError != null) {
+                        Text("Δεν επιτρέπεται νέα φόρτωση πριν επανεκκινήσει η εφαρμογή: " +
+                            fatalNativeTeardownError,
+                            color = MaterialTheme.colorScheme.error)
                     }
                     if (engine?.lastLifecycleError != null) {
                         Text("Σφάλμα lifecycle: " + engine.lastLifecycleError,
