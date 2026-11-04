@@ -223,8 +223,8 @@ class LlamaCppEngine {
                         fatalTeardownFailure.get() +
                         ". Restart Box Voice before attempting another load."
                 }
-                globalModelMutex.withLock {
-                  executeSessionCommand(NativeCommand.LOAD) {
+                executeSessionCommand(NativeCommand.LOAD) {
+                  globalModelMutex.withLock {
                   nativeMutex.withLock {
                     val previous = instance
                     try {
@@ -299,8 +299,8 @@ class LlamaCppEngine {
                 loading?.join()
                 activeGeneration?.join()
                 preceding?.join()
-                globalModelMutex.withLock {
-                    executeSessionCommand(NativeCommand.UNLOAD) {
+                executeSessionCommand(NativeCommand.UNLOAD) {
+                    globalModelMutex.withLock {
                     nativeMutex.withLock {
                         val previous = instance
                         previous.close()
