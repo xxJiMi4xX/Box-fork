@@ -8,6 +8,8 @@ Upstream pinned submodule: `8642541b255bfb5dc39cd351a178be09013a55d6`.
 
 ## Verdict
 
+**HISTORICAL SOURCE AUDIT (superseded for Φ3 source features):** The microphone-time live streaming and typed native command owner were implemented after this original report. See [Φ3 implementation](phase3-microphone-time-streaming.md). The device acceptance gates remain unpassed.
+
 **The master plan is NOT complete.** There is substantive source implementation across Φ0–Φ5, but all M0–M9 *device* gates remain unpassed. There is NO CI run for the full implementation branch. Its source must not be labeled validated, production-ready, or a completed native realtime voice product.
 
 This audit covers code in the connected repository and the actual master plan. It is not an Android compile, a static compiler, a runtime test, a GPU-offload measurement, or evidence that a specific GGUF/mmproj pair works.

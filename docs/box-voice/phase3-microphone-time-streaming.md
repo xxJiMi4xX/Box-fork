@@ -27,7 +27,7 @@ After VAD ends and all frames commit, Greek `transcribeWav` reads the original r
 - A canceled/failed audio stream clears incomplete hybrid state and invalidates hot-Room tracking. **No arbitrary `seq_rm`, `n_keep`, or fake token replay** is applied to the LFM3 recurrent model.
 - The mic capture path can be canceled on VAD rejection, barge-in, app pause, model reset or unload without waiting indefinitely for another AudioRecord frame.
 - This is an experimental multi-turn continuation strategy modeled on pinned upstream semantics. **It remains unverified until M7**, including interleaved voice/text turns and context overflow.
-- A single session mutex serializes operations across model load/unload/reset/ASR/generation, plus a dedicated bounded audio-input actor. The master plan's proposed **single typed command-mailbox for every** `LOAD/APPEND_AUDIO/COMMIT_AUDIO/APPEND_TEXT/GENERATE/CANCEL/CLEAR/UNLOAD` operation is **not yet present** as one complete actor implementation. This is a remaining architecture gap, not a feature to claim as finished.
+- **One process-wide typed native command mailbox** (`NativeSessionMailbox`) serializes model load, unload, clear, history append, ASR, TTS, inspect and generation. Each queued operation inherits its original coroutine Job for cancellation. The microphone's `APPEND_AUDIO → COMMIT_AUDIO` stages are one **atomic owner transaction**, preventing another command from interleaving during a live utterance. Cancellation interrupts decode immediately through the native atomic stop flag and channel close; cleanup is queued afterward. The mailbox FIFO, queued cancellation, active cancellation and recovery-after-error paths now have JVM regression tests. This is implemented in source, not yet validated by CI or on device.
 
 ## Key source files
 
@@ -38,6 +38,8 @@ After VAD ends and all frames commit, Greek `transcribeWav` reads the original r
 - `engine/LivePcm16Resampler.kt`: continuous fractionally aligned stream conversion.
 - `smollm/SmolLM.kt`, `smollm.cpp`, `LLMInference.h/.cpp`: JNI and pinned mtmd integration.
 - `engine/LivePcm16ResamplerTest.kt`: multi-rate, discontinuous-chunk invariance, malformed input.
+- `engine/NativeSessionMailbox.kt`: typed process-wide FIFO actor preserving caller cancellation.
+- `engine/NativeSessionMailboxTest.kt`: command order, canceled queued and active requests, recovery after operation failure.
 - `.github/workflows/box-android-validation.yml`: includes the additional JVM test.
 
 ## Explicit known gaps / evidence boundary
@@ -45,7 +47,7 @@ After VAD ends and all frames commit, Greek `transcribeWav` reads the original r
 1. **No full branch build**. Kotlin compiler, NDK/C++, link/ABI, unit tests, MediaTek/Mali backend and runtime must all be checked in the approved consolidated CI.
 2. **Greek ASR still completes AFTER VAD** (but audio encoding happens during recording). The master plan permits a separate ASR context, but lower-latency streaming transcripts are not implemented.
 3. **Model performance unknown**: if LFM3 encoding slower than mic sample production, queued frames are delayed; if the model's output RTF < 1, speaker buffer alone cannot eliminate pauses.
-4. **One actor mailbox for every model command has not replaced the existing exclusive mutex design**. Current serialization is conservative but not literal fulfillment of every planned command-queue detail.
+4. **One process-wide typed FIFO mailbox is implemented**, but the audio `APPEND_AUDIO/COMMIT_AUDIO` pair is intentionally serialized as a single owner transaction rather than separate interleavable public requests. Cancellation remains a high-priority atomic signal outside the mailbox; final native cleanup is queued. The implementation's correctness, fairness under slow decode, and cancellation behavior still require approved CI and physical-device tests.
 5. **M6/M7/M8 gates not passed** and not claimable until model-specific/runtime evidence. Requested vs actual GPU offload remains unverified in Φ1.
 6. No claim of speaker AEC perfection, consistent hybrid-state preservation, 10-turn voice performance, or memory stability without device evidence.
 
