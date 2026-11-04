@@ -56,6 +56,13 @@ private:
     std::atomic<bool> stopRequested_{false};
     llama_model *model_ = nullptr;
     llama_context *context_ = nullptr;
+    // Independent scratch state for ASR/TTS; avoids erasing chat recurrent state.
+    llama_context *audioContext_ = nullptr;
+    int audioThreads_ = 4;
+    int audioBatchThreads_ = 4;
+    std::vector<llama_token> decodedChatPrefix_;
+    bool chatPrefixValid_ = false;
+
     llama_sampler *sampler_ = nullptr;
     mtmd_context *mmproj_ = nullptr;
     mtmd_helper_gen_audio *mixedGen_ = nullptr;
@@ -80,6 +87,7 @@ private:
     int responseTokens_ = 0;
     int64_t responseTimeUs_ = 0;
 
+    llama_context *getAudioContextLocked();
     std::vector<llama_token> tokenize(const std::string &str);
     std::string tokenToPiece(llama_token token);
     void finishGeneration(bool commitResponse);

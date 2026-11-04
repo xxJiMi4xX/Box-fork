@@ -58,6 +58,7 @@ LLMInference::~LLMInference() {
     if (mmproj_) mtmd_free(mmproj_);
     if (sampler_) llama_sampler_free(sampler_);
     if (context_ && performancePool_) llama_detach_threadpool(context_);
+    if (audioContext_) llama_free(audioContext_);
     if (context_) llama_free(context_);
     if (performancePool_) ggml_threadpool_free(performancePool_);
     if (batchPool_) ggml_threadpool_free(batchPool_);
@@ -139,6 +140,8 @@ void LLMInference::loadModel(const char *path, float minP, float temperature, fl
     cp.n_ubatch = static_cast<uint32_t>(std::min<long>(256, contextSize));
     cp.n_threads = nThreads;
     cp.n_threads_batch = nThreadsBatch;
+    audioThreads_ = nThreads;
+    audioBatchThreads_ = nThreadsBatch;
     cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO;
     cp.no_perf = true;
     cp.embeddings = true; // Required for LFM3 audio-generation hidden state.
@@ -357,16 +360,24 @@ void LLMInference::startCompletion(const char *query) {
     }
     if (tokens.empty()) throw std::runtime_error("Cannot tokenize the chat prompt");
     const auto prefillStarted = std::chrono::steady_clock::now();
-    llama_memory_clear(llama_get_memory(context_), false);
+    const bool prefixMatches =
+        chatPrefixValid_ && decodedChatPrefix_.size() < tokens.size() &&
+        std::equal(decodedChatPrefix_.begin(), decodedChatPrefix_.end(), tokens.begin()) &&
+        llama_memory_seq_pos_max(llama_get_memory(context_), 0) + 1 ==
+            static_cast<llama_pos>(decodedChatPrefix_.size());
+    if (!prefixMatches) {
+        llama_memory_clear(llama_get_memory(context_), false);
+        decodedChatPrefix_.clear();
+    }
     llama_sampler_reset(sampler_);
     response_.clear();
     pendingUtf8_.clear();
     responseTokens_ = 0;
     responseTimeUs_ = 0;
-    contextUsed_ = 0;
+    contextUsed_ = prefixMatches ? static_cast<int>(decodedChatPrefix_.size()) : 0;
     const size_t batchCap = llama_n_batch(context_);
     if (batchCap == 0) throw std::runtime_error("Invalid batch size");
-    for (size_t i = 0; i < tokens.size(); i += batchCap) {
+    for (size_t i = static_cast<size_t>(contextUsed_); i < tokens.size(); i += batchCap) {
         if (stopRequested_.load()) throw std::runtime_error("Prefill cancelled");
         auto count = static_cast<int32_t>(std::min(batchCap, tokens.size() - i));
         llama_batch batch = llama_batch_get_one(tokens.data() + i, count);
@@ -386,11 +397,20 @@ void LLMInference::startCompletion(const char *query) {
             tokens.size(), static_cast<long long>(prefillMs), contextUsed_,
             llama_n_ctx(context_), isLfm3_ ? 1 : 0);
     }
+    decodedChatPrefix_ = tokens;
+    chatPrefixValid_ = true;
+    if (__android_log_is_loggable(ANDROID_LOG_DEBUG, "BoxVoiceNative", ANDROID_LOG_SILENT)) {
+        __android_log_print(ANDROID_LOG_DEBUG, "BoxVoiceNative",
+            "event=chat_prefix_reuse reused_tokens=%zu total_tokens=%zu",
+            prefixMatches ? decodedChatPrefix_.size() : 0UL, tokens.size());
+    }
     beforeGeneration_ = historyBackup;
     generating_ = true;
     } catch (...) {
         messages_ = historyBackup;
         beforeGeneration_.clear();
+        chatPrefixValid_ = false;
+        decodedChatPrefix_.clear();
         generating_ = false;
         response_.clear();
         pendingUtf8_.clear();
@@ -422,6 +442,8 @@ bool LLMInference::validUtf8(const std::string &bytes) {
 
 void LLMInference::finishGeneration(bool commitResponse) {
     if (mixedGen_) {
+        // Audio embeddings/hidden state cannot be represented by cached text tokens.
+        chatPrefixValid_ = false;
         mtmd_helper_gen_audio_free(mixedGen_);
         mixedGen_ = nullptr;
         mixedHidden_.clear();
@@ -430,6 +452,7 @@ void LLMInference::finishGeneration(bool commitResponse) {
     generating_ = false;
     pendingUtf8_.clear();
     if (!commitResponse) {
+        chatPrefixValid_ = false;
         // Cancelling a turn must not leave a dangling user instruction
         // or a partial assistant response in the next generation.
         messages_ = std::move(beforeGeneration_);
@@ -465,6 +488,7 @@ void LLMInference::startMixedCompletion(const char *query) {
         inp.stream = true;
         inp.out_type = MTMD_HELPER_GEN_AUDIO_OUTTYPE_PCM;
         inp.out_mode = MTMD_HELPER_GEN_AUDIO_OUT_AUTO;
+        chatPrefixValid_ = false;
         if (mtmd_helper_gen_audio_set_input(mixedGen_, &inp) != 0)
             throw std::runtime_error("LFM3 mixed output is not supported by this GGUF");
         int32_t left = 0;
@@ -596,6 +620,7 @@ std::optional<std::string> LLMInference::completionLoop() {
         throw std::runtime_error("Token decoding failed");
     }
     contextUsed_ += 1;
+    if (chatPrefixValid_) decodedChatPrefix_.push_back(token);
     responseTimeUs_ += llama_time_us() - start;
     responseTokens_ += 1;
     pendingUtf8_ += piece;
@@ -641,6 +666,8 @@ void LLMInference::resetConversation(const char *systemPrompt) {
     stopRequested_.store(false);
     messages_.clear();
     beforeGeneration_.clear();
+    chatPrefixValid_ = false;
+    decodedChatPrefix_.clear();
     if (*systemPrompt) messages_.emplace_back("system", systemPrompt);
     response_.clear();
     pendingUtf8_.clear();
@@ -651,6 +678,32 @@ void LLMInference::resetConversation(const char *systemPrompt) {
     llama_sampler_reset(sampler_);
 }
 
+llama_context *LLMInference::getAudioContextLocked() {
+    if (audioContext_) return audioContext_;
+    llama_context_params cp = llama_context_default_params();
+    cp.n_ctx = llama_n_ctx(context_);
+    cp.n_batch = llama_n_batch(context_);
+    cp.n_ubatch = llama_n_ubatch(context_);
+    cp.n_threads = audioThreads_;
+    cp.n_threads_batch = audioBatchThreads_;
+    cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO;
+    cp.embeddings = true;
+    audioContext_ = llama_init_from_model(model_, cp);
+    if (!audioContext_) {
+        // Safe memory-constrained fallback: service voice, invalidate hot chat.
+        if (__android_log_is_loggable(ANDROID_LOG_WARN, "BoxVoiceNative", ANDROID_LOG_SILENT)) {
+            __android_log_print(ANDROID_LOG_WARN, "BoxVoiceNative",
+                "event=audio_scratch_unavailable fallback=shared_context cache_invalidated=1");
+        }
+        return context_;
+    }
+    if (__android_log_is_loggable(ANDROID_LOG_DEBUG, "BoxVoiceNative", ANDROID_LOG_SILENT)) {
+        __android_log_print(ANDROID_LOG_DEBUG, "BoxVoiceNative",
+            "event=audio_scratch_ready independent_context=1");
+    }
+    return audioContext_;
+}
+
 std::string LLMInference::transcribeAudio(const std::vector<float> &pcm) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!mmproj_ || !mtmd_support_audio(mmproj_))
@@ -658,6 +711,11 @@ std::string LLMInference::transcribeAudio(const std::vector<float> &pcm) {
     if (generating_ || pcm.empty() || pcm.size() > static_cast<size_t>(mtmd_get_audio_sample_rate(mmproj_)) * 90)
         throw std::runtime_error("Audio busy, empty or longer than 90 seconds");
     stopRequested_.store(false);
+    llama_context *const audioWork = getAudioContextLocked();
+    if (audioWork == context_) {
+        chatPrefixValid_ = false;
+        decodedChatPrefix_.clear();
+    }
 
     // ASR must use the actual LFM3 assistant prefix, not a generic
     // ChatML heuristic that silently drops <think></think>.
@@ -677,14 +735,14 @@ std::string LLMInference::transcribeAudio(const std::vector<float> &pcm) {
     const mtmd_bitmap *ptr = bitmap;
     if (mtmd_tokenize(mmproj_, chunks, &text, &ptr, 1) != 0)
         throw std::runtime_error("Audio preprocessing failed");
-    if (mtmd_helper_get_n_tokens(chunks) + 1 > llama_n_ctx(context_))
+    if (mtmd_helper_get_n_tokens(chunks) + 1 > llama_n_ctx(audioWork))
         throw std::runtime_error("Audio input exceeds context window");
 
-    llama_memory_clear(llama_get_memory(context_), false);
+    llama_memory_clear(llama_get_memory(audioWork), false);
     llama_sampler_reset(sampler_);
     llama_pos nPast = 0;
-    if (mtmd_helper_eval_chunks(mmproj_, context_, chunks, 0, 0,
-        static_cast<int32_t>(llama_n_batch(context_)), true, &nPast) != 0)
+    if (mtmd_helper_eval_chunks(mmproj_, audioWork, chunks, 0, 0,
+        static_cast<int32_t>(llama_n_batch(audioWork)), true, &nPast) != 0)
         throw std::runtime_error("Audio encoder/decoder failed");
     // ASR should be deterministic. Use a separate greedy sampler so that
     // conversational temperature/top-p settings cannot hallucinate a transcript.
@@ -694,22 +752,22 @@ std::string LLMInference::transcribeAudio(const std::vector<float> &pcm) {
     const llama_vocab *vocab = llama_model_get_vocab(model_);
     std::string transcript;
     bool transcriptionFinished = false;
-    const int32_t remaining = static_cast<int32_t>(llama_n_ctx(context_) - nPast - 1);
+    const int32_t remaining = static_cast<int32_t>(llama_n_ctx(audioWork) - nPast - 1);
     const int32_t limit = std::min<int32_t>(2048, remaining);
     for (int32_t i = 0; i < limit; ++i) {
         if (stopRequested_.load()) throw std::runtime_error("Transcription interrupted");
-        const llama_token tok = llama_sampler_sample(asrSampler.get(), context_, -1);
+        const llama_token tok = llama_sampler_sample(asrSampler.get(), audioWork, -1);
         if (llama_vocab_is_eog(vocab, tok)) {
             transcriptionFinished = true;
             break;
         }
         if (!llama_vocab_is_control(vocab, tok)) transcript += tokenToPiece(tok);
         llama_token mutableToken = tok;
-        if (llama_decode(context_, llama_batch_get_one(&mutableToken, 1)) != 0)
+        if (llama_decode(audioWork, llama_batch_get_one(&mutableToken, 1)) != 0)
             throw std::runtime_error("ASR decode failed");
         ++nPast;
     }
-    llama_memory_clear(llama_get_memory(context_), false);
+    llama_memory_clear(llama_get_memory(audioWork), false);
     llama_sampler_reset(sampler_);
     if (!transcriptionFinished)
         throw std::runtime_error("Audio transcription reached the token or context limit");
@@ -734,15 +792,20 @@ std::vector<uint8_t> LLMInference::synthesizeSpeech(const std::string &text) {
     if (audioCapabilities_ != 3 || ttsTemplate_.empty())
         throw std::runtime_error("The selected GGUF has no supported Greek TTS template");
     stopRequested_.store(false);
+    llama_context *const audioWork = getAudioContextLocked();
+    if (audioWork == context_) {
+        chatPrefixValid_ = false;
+        decodedChatPrefix_.clear();
+    }
     std::string promptStr =
         "<|startoftext|><|im_start|>system\n"
         "Perform TTS in Greek using a female voice.<|im_end|>\n"
         "<|im_start|>user\n";
     promptStr += text;
     promptStr += "<|im_end|>\n<|im_start|>assistant\n<think></think><|audio_start|>";
-    llama_memory_clear(llama_get_memory(context_), false);
+    llama_memory_clear(llama_get_memory(audioWork), false);
     llama_sampler_reset(sampler_);
-    auto *gen = mtmd_helper_gen_audio_init(context_, mmproj_);
+    auto *gen = mtmd_helper_gen_audio_init(audioWork, mmproj_);
     if (!gen) throw std::runtime_error("Cannot initialize audio generator");
     std::unique_ptr<mtmd_helper_gen_audio, decltype(&mtmd_helper_gen_audio_free)> holder(
         gen, mtmd_helper_gen_audio_free);
@@ -758,7 +821,7 @@ std::vector<uint8_t> LLMInference::synthesizeSpeech(const std::string &text) {
     for (;;) {
         if (stopRequested_.load()) throw std::runtime_error("Speech generation cancelled");
         const int32_t left = mtmd_helper_gen_audio_step_prompt(
-            gen, static_cast<int32_t>(llama_n_batch(context_)));
+            gen, static_cast<int32_t>(llama_n_batch(audioWork)));
         if (left < 0) throw std::runtime_error("Speech prompt encoding failed");
         if (left == 0) break;
     }
@@ -767,7 +830,7 @@ std::vector<uint8_t> LLMInference::synthesizeSpeech(const std::string &text) {
     // Passing LLAMA_TOKEN_NULL avoids irrelevant text decoding/sampling.
     if (mtmd_helper_gen_audio_next_is_text(gen))
         throw std::runtime_error("LFM3 TTS unexpectedly entered text mode");
-    const float *hidden = llama_get_embeddings_ith(context_, -1);
+    const float *hidden = llama_get_embeddings_ith(audioWork, -1);
     if (!hidden) throw std::runtime_error("Speech decoder returned no hidden state");
     bool done = false;
     for (int frames = 0; frames < 768 && !done; ++frames) {
