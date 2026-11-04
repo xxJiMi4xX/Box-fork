@@ -490,9 +490,9 @@ class LlamaCppEngine {
             var committed = false
             try {
                 val targetRate = nativeMutex.withLock {
-                    if (!model.supportsRealtimeAudio()) return@withLock false
-                    model.audioSampleRate()
+                    if (model.supportsRealtimeAudio()) model.audioSampleRate() else 0
                 }
+                if (targetRate == 0) return@withLock false
                 check(targetRate in 8000..192000) { "Invalid LFM3 input rate" }
                 val converter = LivePcm16Resampler(sourceRate, targetRate)
                 nativeMutex.withLock {
