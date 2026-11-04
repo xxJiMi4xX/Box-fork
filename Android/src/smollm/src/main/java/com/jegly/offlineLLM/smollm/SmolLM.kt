@@ -135,6 +135,23 @@ class SmolLM {
         val done: Boolean,
     )
 
+    // Only called by the exclusive LlamaCppEngine session owner.
+    fun beginMixedResponse(query: String): Long {
+        verifyHandle()
+        val handle = nativePtr
+        nativeStartMixedCompletion(handle, query)
+        return handle
+    }
+
+    fun nextMixedResponse(handle: Long): MixedVoiceStep {
+        check(handle != 0L && nativePtr == handle) { "Mixed model handle changed" }
+        return nativeMixedCompletionLoop(handle)
+    }
+
+    fun endMixedResponse(handle: Long) {
+        if (handle != 0L && nativePtr == handle) stopCompletion(handle)
+    }
+
     fun getMixedResponseAsFlow(query: String): Flow<MixedVoiceStep> = flow {
         verifyHandle()
         val handle = nativePtr

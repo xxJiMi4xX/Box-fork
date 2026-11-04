@@ -42,6 +42,7 @@ class LlamaCppEngine {
     @Volatile private var instance = SmolLM()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val nativeMutex = Mutex()
+    private val sessionMutex = Mutex()
     private fun traceMemory(stage: String, epoch: Long) {
         if (!Log.isLoggable("BoxVoiceNative", Log.DEBUG)) return
         val info = Debug.MemoryInfo()
@@ -126,6 +127,7 @@ class LlamaCppEngine {
                 pendingTeardown?.join()
                 isUnloading = false
                 globalModelMutex.withLock {
+                  sessionMutex.withLock {
                   nativeMutex.withLock {
                     val previous = instance
                     previous.close()
@@ -149,6 +151,7 @@ class LlamaCppEngine {
                         if (instance === next) instance = SmolLM()
                         throw failure
                     }
+                  }
                   }
                 }
                 withContext(Dispatchers.Main) {
@@ -191,10 +194,12 @@ class LlamaCppEngine {
                 activeGeneration?.join()
                 preceding?.join()
                 globalModelMutex.withLock {
+                    sessionMutex.withLock {
                     nativeMutex.withLock {
                         val previous = instance
                         previous.close()
                         if (instance === previous) instance = SmolLM()
+                    }
                     }
                 }
                 if (lifecycleEpoch.get() == epoch) {
@@ -246,11 +251,13 @@ class LlamaCppEngine {
         try {
             runBlocking(Dispatchers.IO) {
                 activeGeneration?.join()
+                sessionMutex.withLock {
                 nativeMutex.withLock {
                     check(isModelLoaded.get() && !isUnloading && lifecycleEpoch.get() == loadedEpoch) {
                         "The GGUF model changed during conversation reset"
                     }
                     instance.resetConversation(systemPrompt)
+                }
                 }
             }
             lastSystemPrompt = systemPrompt
@@ -279,6 +286,7 @@ class LlamaCppEngine {
         stopGeneration()
         val current = generationJob
         current?.join()
+        sessionMutex.withLock {
         nativeMutex.withLock {
             if (!stillCurrent()) return@withLock 0
             check(isModelLoaded.get() && !isUnloading && epoch == lifecycleEpoch.get()) {
@@ -297,10 +305,12 @@ class LlamaCppEngine {
             hotRoomSystemPrompt = systemPrompt
             conversationHistory.size
         }
+        }
     }
 
     suspend fun transcribeWav(wav: ByteArray): String = withContext(Dispatchers.IO) {
         require(wav.isNotEmpty()) { "No recorded audio was supplied" }
+        sessionMutex.withLock {
         nativeMutex.withLock {
             check(isModelLoaded.get() && !isUnloading) { "GGUF model unavailable or unloading" }
             isVoiceBusy = true
@@ -314,10 +324,12 @@ class LlamaCppEngine {
                 isVoiceBusy = false
             }
         }
+        }
     }
 
     suspend fun synthesizeSpeech(text: String): ByteArray = withContext(Dispatchers.IO) {
         require(text.isNotBlank())
+        sessionMutex.withLock {
         nativeMutex.withLock {
             check(isModelLoaded.get() && !isUnloading) { "GGUF model unavailable or unloading" }
             isVoiceBusy = true
@@ -326,6 +338,7 @@ class LlamaCppEngine {
             } finally {
                 isVoiceBusy = false
             }
+        }
         }
     }
 
@@ -344,32 +357,44 @@ class LlamaCppEngine {
         stopGeneration()
         val epoch = generationEpoch.incrementAndGet()
         return withContext(Dispatchers.IO) {
-            nativeMutex.withLock {
+            sessionMutex.withLock {
                 check(isModelLoaded.get() && !isUnloading && generationEpoch.get() == epoch) {
                     "Mixed generation superseded or model unloaded"
                 }
-                currentCoroutineContext().ensureActive()
-                isGenerating = true
                 val model = instance
+                val handle = nativeMutex.withLock { model.beginMixedResponse(query) }
+                isGenerating = true
                 val full = StringBuilder()
                 try {
                     val duration = measureTime {
-                        model.getMixedResponseAsFlow(query).collect { part ->
+                        while (true) {
                             currentCoroutineContext().ensureActive()
                             check(generationEpoch.get() == epoch) {
                                 "Mixed generation superseded"
                             }
-                            full.append(part.text)
-                            onChunk(part)
+                            val chunk = nativeMutex.withLock { model.nextMixedResponse(handle) }
+                            if (chunk.text.isNotEmpty() || chunk.pcm16.isNotEmpty()) {
+                                full.append(chunk.text)
+                                // Backpressure and Compose callbacks NEVER hold nativeMutex.
+                                onChunk(chunk)
+                            }
+                            if (chunk.done) break
                         }
                     }
                     GenerationResult(
                         response = full.toString(),
-                        tokensPerSecond = model.getResponseGenerationSpeed(),
+                        tokensPerSecond = nativeMutex.withLock {
+                            model.getResponseGenerationSpeed()
+                        },
                         durationSeconds = duration.inWholeSeconds.toInt(),
-                        contextLengthUsed = model.getContextLengthUsed(),
+                        contextLengthUsed = nativeMutex.withLock {
+                            model.getContextLengthUsed()
+                        },
                     )
                 } finally {
+                    withContext(NonCancellable) {
+                        nativeMutex.withLock { model.endMixedResponse(handle) }
+                    }
                     if (generationEpoch.get() == epoch) isGenerating = false
                 }
             }
@@ -391,7 +416,8 @@ class LlamaCppEngine {
         val epoch = generationEpoch.incrementAndGet()
         generationJob = scope.launch {
             try {
-                val result = nativeMutex.withLock {
+                val result = sessionMutex.withLock {
+                    nativeMutex.withLock {
                     check(isModelLoaded.get() && !isUnloading && generationEpoch.get() == epoch) {
                         "Model was unloaded or this response was superseded"
                     }
@@ -418,6 +444,7 @@ class LlamaCppEngine {
                         durationSeconds = duration.inWholeSeconds.toInt(),
                         contextLengthUsed = model.getContextLengthUsed(),
                     )
+                    }
                 }
                 withContext(Dispatchers.Main) {
                     if (generationEpoch.get() == epoch) onComplete(result)
