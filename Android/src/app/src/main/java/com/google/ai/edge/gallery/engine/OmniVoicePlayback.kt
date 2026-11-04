@@ -7,6 +7,8 @@ import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.os.SystemClock
+import android.util.Log
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
@@ -120,6 +122,8 @@ class OmniVoicePlayback {
             privateOutputRouted.set(privateDevice(player.routedDevice))
             var firstPlayed = false
             var totalSamples = 0L
+            var maxPlaybackWaitMs = 0L
+            val firstPlaybackNs = SystemClock.elapsedRealtimeNanos()
 
             suspend fun writeChunk(chunk: PcmChunk) {
                 check(chunk.sampleRate == rate && chunk.bytes.size % 2 == 0) {
@@ -141,10 +145,15 @@ class OmniVoicePlayback {
                 }
             }
             writeChunk(first)
+            var lastChunkNs = SystemClock.elapsedRealtimeNanos()
             for (chunk in chunks) {
                 currentCoroutineContext().ensureActive()
                 if (!synchronized(lock) { active === player }) break
+                val arrivedNs = SystemClock.elapsedRealtimeNanos()
+                maxPlaybackWaitMs = maxOf(maxPlaybackWaitMs,
+                    (arrivedNs - lastChunkNs) / 1_000_000L)
                 writeChunk(chunk)
+                lastChunkNs = SystemClock.elapsedRealtimeNanos()
             }
 
             val deadlineMs = totalSamples * 1000L / rate + 5000L
@@ -159,6 +168,13 @@ class OmniVoicePlayback {
                     }
                     delay(20)
                 }
+            }
+            if (Log.isLoggable("BoxVoiceNative", Log.DEBUG)) {
+                Log.d("BoxVoiceNative", "event=pcm_stream_end " +
+                    "sample_rate_hz=$rate total_frames=$totalSamples " +
+                    "max_playback_wait_ms=$maxPlaybackWaitMs " +
+                    "elapsed_ms=${(SystemClock.elapsedRealtimeNanos() - firstPlaybackNs) / 1_000_000L} " +
+                    "underruns=${player.underrunCount} buffer_frames=${player.bufferSizeInFrames}")
             }
         } finally {
             if (counted && activePlayers.decrementAndGet() == 0) {

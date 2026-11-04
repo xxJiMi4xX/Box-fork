@@ -5,6 +5,8 @@
 #include <fstream>
 #include <numeric>
 #include <array>
+#include <android/log.h>
+#include <chrono>
 #include "mtmd-helper.h"
 #include <memory>
 #include <mutex>
@@ -46,6 +48,10 @@ static std::vector<int> getFastestCores(size_t requested) {
 }
 
 LLMInference::~LLMInference() {
+    const bool trace = __android_log_is_loggable(
+        ANDROID_LOG_DEBUG, "BoxVoiceNative", ANDROID_LOG_SILENT);
+    if (trace) __android_log_print(ANDROID_LOG_DEBUG, "BoxVoiceNative",
+        "event=native_destructor_started");
     stopRequested_.store(true);
     std::lock_guard<std::mutex> lock(mutex_);
     if (mixedGen_) mtmd_helper_gen_audio_free(mixedGen_);
@@ -56,6 +62,8 @@ LLMInference::~LLMInference() {
     if (performancePool_) ggml_threadpool_free(performancePool_);
     if (batchPool_) ggml_threadpool_free(batchPool_);
     if (model_) llama_model_free(model_);
+    if (trace) __android_log_print(ANDROID_LOG_DEBUG, "BoxVoiceNative",
+        "event=native_destructor_completed");
 }
 
 void LLMInference::loadModel(const char *path, float minP, float temperature, float topP,
@@ -88,6 +96,21 @@ void LLMInference::loadModel(const char *path, float minP, float temperature, fl
         : (useMlock ? LLAMA_LOAD_MODE_MLOCK : LLAMA_LOAD_MODE_NONE);
     model_ = llama_model_load_from_file(path, mp);
     if (!model_) throw std::runtime_error("Cannot load GGUF model");
+    if (__android_log_is_loggable(ANDROID_LOG_DEBUG, "BoxVoiceNative", ANDROID_LOG_SILENT)) {
+        __android_log_print(ANDROID_LOG_DEBUG, "BoxVoiceNative",
+            "event=native_model_loaded requested_gpu_layers=%d model_layers=%d "
+            "model_bytes=%llu quant_ftype=%d device_count=%zu actual_offloaded_layers=unverified",
+            nGpuLayers, llama_model_n_layer(model_),
+            static_cast<unsigned long long>(llama_model_size(model_)),
+            static_cast<int>(llama_model_ftype(model_)), ggml_backend_dev_count());
+        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+            const auto dev = ggml_backend_dev_get(i);
+            __android_log_print(ANDROID_LOG_DEBUG, "BoxVoiceNative",
+                "event=backend_device index=%zu type=%d name=%s",
+                i, static_cast<int>(ggml_backend_dev_type(dev)),
+                ggml_backend_dev_name(dev));
+        }
+    }
     char architecture[128] = {};
     isLfm3_ = llama_model_meta_val_str(
         model_, "general.architecture", architecture, sizeof(architecture)) > 0 &&
@@ -307,6 +330,7 @@ void LLMInference::startCompletion(const char *query) {
         tokens = renderConversation();
     }
     if (tokens.empty()) throw std::runtime_error("Cannot tokenize the chat prompt");
+    const auto prefillStarted = std::chrono::steady_clock::now();
     llama_memory_clear(llama_get_memory(context_), false);
     llama_sampler_reset(sampler_);
     response_.clear();
@@ -327,6 +351,14 @@ void LLMInference::startCompletion(const char *query) {
         batch.logits = logitsFlags.data();
         if (llama_decode(context_, batch) != 0) throw std::runtime_error("Prompt decoding failed");
         contextUsed_ += count;
+    }
+    if (__android_log_is_loggable(ANDROID_LOG_DEBUG, "BoxVoiceNative", ANDROID_LOG_SILENT)) {
+        const auto prefillMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - prefillStarted).count();
+        __android_log_print(ANDROID_LOG_DEBUG, "BoxVoiceNative",
+            "event=prefill_done tokens=%zu prefill_ms=%lld n_past=%d n_ctx=%u lfm3=%d",
+            tokens.size(), static_cast<long long>(prefillMs), contextUsed_,
+            llama_n_ctx(context_), isLfm3_ ? 1 : 0);
     }
     beforeGeneration_ = historyBackup;
     generating_ = true;

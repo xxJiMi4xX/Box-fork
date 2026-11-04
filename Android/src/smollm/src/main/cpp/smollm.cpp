@@ -1,5 +1,6 @@
 #include "LLMInference.h"
 #include <jni.h>
+#include <android/log.h>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -125,6 +126,11 @@ Java_com_jegly_offlineLLM_smollm_SmolLM_loadModel(
         id = nextId.fetch_add(1);
         std::lock_guard<std::mutex> lock(registryMutex);
         instances.emplace(id, std::move(instance));
+        if (__android_log_is_loggable(ANDROID_LOG_DEBUG, "BoxVoiceNative", ANDROID_LOG_SILENT)) {
+            __android_log_print(ANDROID_LOG_DEBUG, "BoxVoiceNative",
+                "event=native_handle_loaded handle=%lld live_handles=%zu",
+                static_cast<long long>(id), instances.size());
+        }
     });
     return id;
 }
@@ -166,6 +172,11 @@ Java_com_jegly_offlineLLM_smollm_SmolLM_close(JNIEnv *env, jobject, jlong id) {
             if (it == instances.end()) return;
             instance = std::move(it->second);
             instances.erase(it);
+            if (__android_log_is_loggable(ANDROID_LOG_DEBUG, "BoxVoiceNative", ANDROID_LOG_SILENT)) {
+                __android_log_print(ANDROID_LOG_DEBUG, "BoxVoiceNative",
+                    "event=native_handle_detached handle=%lld live_handles=%zu",
+                    static_cast<long long>(id), instances.size());
+            }
         }
         instance->requestStop();
     });

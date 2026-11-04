@@ -612,7 +612,9 @@ open class LlmChatViewModelBase() : ChatViewModel() {
             check(failure == null) {
               "Ο προηγούμενος γύρος δεν αποθηκεύτηκε. Απαιτείται επαναφορά: $failure"
             }
+            voiceTrace?.mark("room_read_started")
             val rows = chatRepository.getMessagesSync(ggufConversationId)
+            voiceTrace?.mark("room_read_completed")
             val paired = mutableListOf<Pair<String, String>>()
             var pending: String? = null
             for (row in rows) {
@@ -628,6 +630,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                 }
               }
             }
+            voiceTrace?.mark("history_replay_started")
             (model.instance as LlamaCppEngine).restoreConversation(
               systemPromptsByModel[model.name] ?: "",
               paired.takeLast(200),
@@ -888,6 +891,8 @@ open class LlmChatViewModelBase() : ChatViewModel() {
           var audioRate = 0
           var producedText = false
           var producedAudio = false
+          var generatedPcmFrames = 0L
+          val mixedStartedNs = SystemClock.elapsedRealtimeNanos()
           val playbackFailure = AtomicReference<Exception?>(null)
           val playerJob = viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -929,11 +934,20 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                   "Υπέρβαση του ορίου μνήμης ηχητικής απάντησης"
                 }
                 producedAudio = true
+                generatedPcmFrames += chunk.pcm16.size / 2L
                 combinedAudio.write(chunk.pcm16)
                 audioChannel.send(OmniVoicePlayback.PcmChunk(audioRate, chunk.pcm16))
               }
             }
             audioChannel.close()
+            if (Log.isLoggable("BoxVoiceNative", Log.DEBUG)) {
+              val wallNs = (SystemClock.elapsedRealtimeNanos() - mixedStartedNs).coerceAtLeast(1L)
+              val generatedMs = if (audioRate > 0) generatedPcmFrames * 1000L / audioRate else 0L
+              Log.d("BoxVoiceNative", "event=mixed_generation_end epoch=$epoch " +
+                  "audio_rate_hz=$audioRate generated_frames=$generatedPcmFrames " +
+                  "generated_audio_ms=$generatedMs generation_wall_ms=${wallNs / 1_000_000L} " +
+                  "audio_rtf=${if (audioRate > 0) generatedPcmFrames * 1_000_000_000.0 / audioRate / wallNs else 0.0}")
+            }
             check(producedText) { "Το LFM3 mixed mode δεν παρήγαγε κείμενο" }
             if (!producedAudio) {
               // Model may generate text without PCM. Reuse existing TTS.

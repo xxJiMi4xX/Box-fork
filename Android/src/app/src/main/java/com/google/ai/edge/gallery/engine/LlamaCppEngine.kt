@@ -2,6 +2,9 @@ package com.google.ai.edge.gallery.engine
 
 import com.jegly.offlineLLM.smollm.SmolLM
 import android.os.Looper
+import android.os.Debug
+import android.util.Log
+import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -39,6 +42,17 @@ class LlamaCppEngine {
     @Volatile private var instance = SmolLM()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val nativeMutex = Mutex()
+    private fun traceMemory(stage: String, epoch: Long) {
+        if (!Log.isLoggable("BoxVoiceNative", Log.DEBUG)) return
+        val info = Debug.MemoryInfo()
+        Debug.getMemoryInfo(info)
+        val fds = runCatching { File("/proc/self/fd").list()?.size ?: -1 }.getOrDefault(-1)
+        val mappings = runCatching { File("/proc/self/maps").useLines { it.count() } }
+            .getOrDefault(-1)
+        Log.d("BoxVoiceNative", "event=$stage epoch=$epoch " +
+            "pss_kb=${info.totalPss} native_pss_kb=${info.nativePss} " +
+            "fd_count=$fds mappings_count=$mappings model_loaded=${isModelLoaded.get()}")
+    }
     private val lifecycleEpoch = AtomicLong(0L)
     private val generationEpoch = AtomicLong(0L)
 
@@ -84,6 +98,7 @@ class LlamaCppEngine {
         stopGeneration()
         loadJob?.cancel()
         val epoch = lifecycleEpoch.incrementAndGet()
+        traceMemory("load_requested", epoch)
         isModelLoaded.set(false)
         supportsGreekVoice = false
         hardwareInfo = ""
@@ -99,6 +114,7 @@ class LlamaCppEngine {
                     instance = next
                     try {
                         next.load(modelPath, params)
+                        traceMemory("model_allocated", epoch)
                         supportsGreekVoice = next.audioCapabilities() == 3
                         hardwareInfo = next.hardwareInfo()
                         if (systemPrompt.isNotBlank()) next.addSystemPrompt(systemPrompt)
@@ -138,7 +154,8 @@ class LlamaCppEngine {
     fun unloadModel(onDone: () -> Unit = {}) {
         stopGeneration()
         loadJob?.cancel()
-        lifecycleEpoch.incrementAndGet()
+        val epoch = lifecycleEpoch.incrementAndGet()
+        traceMemory("unload_requested", epoch)
         isModelLoaded.set(false)
         supportsGreekVoice = false
         // Do not capture instance before the cancelled load job exits:
@@ -157,6 +174,7 @@ class LlamaCppEngine {
                     }
                 }
             } finally {
+                traceMemory("unload_teardown_settled", epoch)
                 withContext(NonCancellable + Dispatchers.Main) { onDone() }
             }
         }
